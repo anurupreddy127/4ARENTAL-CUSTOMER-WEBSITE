@@ -1,0 +1,21 @@
+.hamburger-menu svg {
+  transition: transform 600ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hamburger-menu .line {
+  transition: stroke-dasharray 600ms cubic-bezier(0.4, 0, 0.2, 1),
+    stroke-dashoffset 600ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hamburger-menu .line-top-bottom {
+  stroke-dasharray: 12 63;
+}
+
+.hamburger-menu input:checked + svg {
+  transform: rotate(-45deg);
+}
+
+.hamburger-menu input:checked + svg .line-top-bottom {
+  stroke-dasharray: 20 300;
+  stroke-dashoffset: -32.42;
+}

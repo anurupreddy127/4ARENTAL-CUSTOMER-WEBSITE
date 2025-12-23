@@ -1,0 +1,1 @@
+export { WhyRentWithUs } from "./WhyRentWithUs";
