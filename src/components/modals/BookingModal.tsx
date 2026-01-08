@@ -7,8 +7,14 @@ import React, {
   useRef,
 } from "react";
 import { X, ArrowLeft } from "lucide-react";
-import { Vehicle } from "@/types";
+import { Vehicle, BookingTotal } from "@/types";
 import { useAuth } from "@/hooks/useAuth";
+import {
+  usePricing,
+  useDateValidation,
+  useBookingConfig,
+  useAvailability,
+} from "@/hooks";
 import {
   deliveryLocationService,
   DeliveryLocation,
@@ -40,9 +46,12 @@ interface BookingModalProps {
 
 interface BookingData {
   pickupDate: string;
-  months: number;
+  returnDate: string;
+  isStudent: boolean;
+  studentIdUrl: string | null;
   pickupType: "store" | "delivery";
   pickupLocation: string;
+  deliveryTimeSlot: string | null;
   selectedCity: string;
   deliveryLocationId: string;
   deliveryFee: number;
@@ -55,8 +64,6 @@ interface BookingData {
 // ============================================
 const STORAGE_KEY = "booking_driver_info";
 const STORE_LOCATION = "Denton, Texas";
-const ADDITIONAL_DRIVER_FEE = 50;
-const DAYS_PER_MONTH = 30;
 const PROFILE_SAVE_TIMEOUT_MS = 3000;
 
 const INITIAL_PRIMARY_DRIVER: PrimaryDriverData = {
@@ -74,9 +81,12 @@ const INITIAL_PRIMARY_DRIVER: PrimaryDriverData = {
 
 const createInitialBookingData = (email: string): BookingData => ({
   pickupDate: "",
-  months: 1,
+  returnDate: "",
+  isStudent: false,
+  studentIdUrl: null,
   pickupType: "store",
   pickupLocation: STORE_LOCATION,
+  deliveryTimeSlot: null,
   selectedCity: "",
   deliveryLocationId: "",
   deliveryFee: 0,
@@ -196,6 +206,9 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   // Auth
   const { currentUser } = useAuth();
 
+  // Config
+  const { additionalDriverFee: driverFeePerPerson } = useBookingConfig();
+
   // State
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState(1);
@@ -212,31 +225,48 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   const [loadingCityLocations, setLoadingCityLocations] = useState(false);
 
   // ============================================
+  // AVAILABILITY (blocked dates)
+  // ============================================
+  const {
+    isDateBlocked,
+    getBlockedReason,
+    loading: availabilityLoading,
+  } = useAvailability({
+    vehicleId: vehicle?.id || null,
+    enabled: isOpen,
+  });
+
+  // ============================================
+  // DATE VALIDATION (using config values)
+  // ============================================
+  const dateValidation = useDateValidation({
+    pickupDate: bookingData.pickupDate || null,
+    returnDate: bookingData.returnDate || null,
+  });
+
+  // ============================================
+  // PRICING (from database)
+  // ============================================
+  const {
+    pricing,
+    breakdown,
+    loading: pricingLoading,
+    error: pricingError,
+  } = usePricing({
+    vehicleId: vehicle?.id || null,
+    pickupDate: bookingData.pickupDate || null,
+    returnDate: bookingData.returnDate || null,
+    isStudent: bookingData.isStudent,
+    deliveryFee: bookingData.deliveryFee,
+    additionalDrivers: bookingData.additionalDrivers.length,
+    enabled: dateValidation.isValid,
+  });
+
+  // ============================================
   // MEMOIZED VALUES
   // ============================================
 
   const modalTitleId = "booking-modal-title";
-
-  const returnDateISO = useMemo(() => {
-    if (!bookingData.pickupDate) return "";
-    const pickup = new Date(bookingData.pickupDate);
-    const returnDate = new Date(pickup);
-    returnDate.setDate(
-      returnDate.getDate() + bookingData.months * DAYS_PER_MONTH
-    );
-    return returnDate.toISOString();
-  }, [bookingData.pickupDate, bookingData.months]);
-
-  const returnDateDisplay = useMemo(() => {
-    if (!returnDateISO) return "";
-    return new Date(returnDateISO).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  }, [returnDateISO]);
 
   const handleClose = useCallback(() => {
     if (hasFormData(bookingData) && step > 1) {
@@ -252,25 +282,60 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   }, [bookingData, step, onClose]);
 
   const isStep1Valid = useMemo(() => {
-    const hasValidDate =
-      bookingData.pickupDate !== "" && bookingData.months > 0;
+    // Must have valid dates
+    if (!dateValidation.isValid) return false;
 
-    if (bookingData.pickupType === "store") {
-      return hasValidDate;
+    // Must have pricing loaded
+    if (!pricing) return false;
+
+    // Check pickup date is not on a closed day
+    if (bookingData.pickupDate && isDateBlocked(bookingData.pickupDate)) {
+      return false;
     }
 
-    // For delivery, need both city and location selected
-    return (
-      hasValidDate &&
-      bookingData.selectedCity !== "" &&
-      bookingData.deliveryLocationId !== ""
-    );
+    // Check return date is not on a closed day
+    if (bookingData.returnDate && isDateBlocked(bookingData.returnDate)) {
+      return false;
+    }
+
+    // Check if any date in range has a BOOKING conflict (not holidays)
+    // Holidays in the middle of rental period are OK - customer already has the car
+    if (bookingData.pickupDate && bookingData.returnDate) {
+      const start = new Date(bookingData.pickupDate);
+      const end = new Date(bookingData.returnDate);
+      const current = new Date(start);
+
+      while (current <= end) {
+        const reason = getBlockedReason(current);
+        // Only block if it's a booking conflict
+        if (reason && reason.toLowerCase().includes("already booked")) {
+          return false;
+        }
+        current.setDate(current.getDate() + 1);
+      }
+    }
+
+    // For delivery, need city, location, AND time slot selected
+    if (bookingData.pickupType === "delivery") {
+      return (
+        bookingData.selectedCity !== "" &&
+        bookingData.deliveryLocationId !== "" &&
+        bookingData.deliveryTimeSlot !== null
+      );
+    }
+
+    return true;
   }, [
+    dateValidation.isValid,
+    pricing,
     bookingData.pickupDate,
-    bookingData.months,
+    bookingData.returnDate,
     bookingData.pickupType,
     bookingData.selectedCity,
     bookingData.deliveryLocationId,
+    bookingData.deliveryTimeSlot,
+    isDateBlocked,
+    getBlockedReason,
   ]);
 
   const isStep2Valid = useMemo(() => {
@@ -441,14 +506,6 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   // HANDLERS
   // ============================================
 
-  // const resetForm = useCallback(() => {
-  //   setStep(1);
-  //   setError("");
-  //   setShowAdditionalDriver(false);
-  //   setBookingData(createInitialBookingData(user?.email || ""));
-  //   setCityLocations([]);
-  // }, [user?.email]);
-
   const handleStepBack = useCallback(() => {
     setStep((prev) => prev - 1);
   }, []);
@@ -457,8 +514,17 @@ export const BookingModal: React.FC<BookingModalProps> = ({
     setBookingData((prev) => ({ ...prev, pickupDate: date }));
   }, []);
 
-  const handleMonthsChange = useCallback((months: number) => {
-    setBookingData((prev) => ({ ...prev, months }));
+  const handleReturnDateChange = useCallback((date: string) => {
+    setBookingData((prev) => ({ ...prev, returnDate: date }));
+  }, []);
+
+  const handleIsStudentChange = useCallback((isStudent: boolean) => {
+    setBookingData((prev) => ({
+      ...prev,
+      isStudent,
+      // Clear student ID if unchecked
+      studentIdUrl: isStudent ? prev.studentIdUrl : null,
+    }));
   }, []);
 
   const handlePickupTypeChange = useCallback((type: "store" | "delivery") => {
@@ -466,6 +532,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
       ...prev,
       pickupType: type,
       pickupLocation: type === "store" ? STORE_LOCATION : "",
+      deliveryTimeSlot: null,
       selectedCity: type === "store" ? "" : prev.selectedCity,
       deliveryLocationId: type === "store" ? "" : prev.deliveryLocationId,
       deliveryFee: type === "store" ? 0 : prev.deliveryFee,
@@ -484,6 +551,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
       deliveryLocationId: "",
       deliveryFee: 0,
       pickupLocation: "",
+      deliveryTimeSlot: null,
     }));
   }, []);
 
@@ -508,6 +576,13 @@ export const BookingModal: React.FC<BookingModalProps> = ({
     },
     [cityLocations]
   );
+
+  const handleDeliveryTimeSlotChange = useCallback((timeSlot: string) => {
+    setBookingData((prev) => ({
+      ...prev,
+      deliveryTimeSlot: timeSlot,
+    }));
+  }, []);
 
   const handlePrimaryDriverChange = useCallback(
     (field: keyof PrimaryDriverData, value: string) => {
@@ -601,12 +676,8 @@ export const BookingModal: React.FC<BookingModalProps> = ({
     setStep(3);
   }, []);
 
-  const getReturnDateDisplay = useCallback(() => {
-    return returnDateDisplay;
-  }, [returnDateDisplay]);
-
   const handleSubmit = useCallback(async () => {
-    if (!vehicle || !currentUser) return;
+    if (!vehicle || !currentUser || !pricing) return;
 
     setLoading(true);
     setError("");
@@ -645,17 +716,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
         logWarning("Profile save failed (continuing anyway)", profileError);
       }
 
-      // Step 2: Calculate pricing
-      const rentalAmount = bookingData.months * vehicle.price;
-      const deliveryFee =
-        bookingData.pickupType === "delivery" ? bookingData.deliveryFee : 0;
-      const additionalDriverFee =
-        bookingData.additionalDrivers.length * ADDITIONAL_DRIVER_FEE;
-      const securityDeposit = vehicle.price;
-      const totalAmount =
-        rentalAmount + deliveryFee + additionalDriverFee + securityDeposit;
-
-      // Step 3: Get environment variables
+      // Step 2: Get environment variables
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
       const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
@@ -665,7 +726,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
         );
       }
 
-      // Step 4: Build payload
+      // Step 3: Build payload (using pricing from database)
       const payload = {
         userId: currentUser.id,
         vehicleId: vehicle.id,
@@ -673,20 +734,34 @@ export const BookingModal: React.FC<BookingModalProps> = ({
         vehicleImage: Array.isArray(vehicle.image)
           ? vehicle.image[0]
           : vehicle.image,
+        // Pickup details
         pickupType: bookingData.pickupType,
         pickupLocation: bookingData.pickupLocation,
         deliveryLocationId:
           bookingData.pickupType === "delivery"
             ? bookingData.deliveryLocationId
             : null,
-        deliveryFee,
+        deliveryFee: pricing.deliveryFee,
+        deliveryTimeSlot: bookingData.deliveryTimeSlot,
+        // Dates
         pickupDate: new Date(bookingData.pickupDate).toISOString(),
-        returnDate: returnDateISO,
-        rentalMonths: bookingData.months,
-        rentalAmount,
-        securityDeposit,
-        additionalDriverFee,
-        totalAmount,
+        returnDate: new Date(bookingData.returnDate).toISOString(),
+        // Rental details (from database pricing)
+        rentalDays: pricing.rentalDays,
+        rentalType: pricing.rentalType,
+        pricingMethod: pricing.pricingMethod,
+        dailyRate: pricing.dailyRate,
+        weeklyRate: pricing.weeklyRate,
+        monthlyRate: pricing.monthlyRate,
+        // Amounts (from database pricing)
+        rentalAmount: pricing.rentalAmount,
+        securityDeposit: pricing.securityDeposit,
+        additionalDriverFee: pricing.additionalDriverFee,
+        totalAmount: pricing.totalDueNow,
+        // Student info
+        isStudentBooking: bookingData.isStudent,
+        studentIdUrl: bookingData.studentIdUrl,
+        // Customer info
         customerEmail: bookingData.primaryDriver.email,
         primaryDriver: {
           ...bookingData.primaryDriver,
@@ -698,7 +773,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
         }),
       };
 
-      // Step 5: Make API call
+      // Step 4: Make API call
       const response = await fetch(
         `${supabaseUrl}/functions/v1/create-checkout-session`,
         {
@@ -741,7 +816,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
       logError("handleSubmit", err);
       setLoading(false);
     }
-  }, [vehicle, currentUser, bookingData, returnDateISO]);
+  }, [vehicle, currentUser, bookingData, pricing]);
 
   // ============================================
   // RENDER
@@ -816,30 +891,56 @@ export const BookingModal: React.FC<BookingModalProps> = ({
             </div>
           )}
 
+          {/* Pricing Error */}
+          {pricingError && (
+            <div
+              role="alert"
+              className="bg-amber-50 border border-amber-200 text-amber-700 px-4 py-3 rounded-lg mb-6 text-sm"
+            >
+              {pricingError}
+            </div>
+          )}
+
           {/* Step 1: Date Selection */}
           {step === 1 && (
             <DateSelectionStep
               vehicle={vehicle}
               pickupDate={bookingData.pickupDate}
-              months={bookingData.months}
+              returnDate={bookingData.returnDate}
+              isStudent={bookingData.isStudent}
               pickupType={bookingData.pickupType}
               pickupLocation={bookingData.pickupLocation}
-              // City selection (two-step)
+              // City selection
               availableCities={availableCities}
               loadingCities={loadingCities}
               selectedCity={bookingData.selectedCity}
               onCityChange={handleCityChange}
-              // Location selection (two-step)
+              // Location selection
               cityLocations={cityLocations}
               loadingCityLocations={loadingCityLocations}
               deliveryLocationId={bookingData.deliveryLocationId}
               deliveryFee={bookingData.deliveryFee}
               onDeliveryLocationChange={handleDeliveryLocationChange}
-              // Other props
-              additionalDriverCount={bookingData.additionalDrivers.length}
+              // Delivery time slot
+              deliveryTimeSlot={bookingData.deliveryTimeSlot}
+              onDeliveryTimeSlotChange={handleDeliveryTimeSlotChange}
+              // Date handlers
               onPickupDateChange={handlePickupDateChange}
-              onMonthsChange={handleMonthsChange}
+              onReturnDateChange={handleReturnDateChange}
+              onIsStudentChange={handleIsStudentChange}
               onPickupTypeChange={handlePickupTypeChange}
+              // Validation
+              dateValidation={dateValidation}
+              // Availability (NEW!)
+              isDateBlocked={isDateBlocked}
+              getBlockedReason={getBlockedReason}
+              availabilityLoading={availabilityLoading}
+              // Pricing
+              pricing={pricing}
+              pricingLoading={pricingLoading}
+              // Additional drivers
+              additionalDriverCount={bookingData.additionalDrivers.length}
+              // Actions
               onContinue={handleContinueToStep2}
               isValid={isStep1Valid}
             />
@@ -864,19 +965,19 @@ export const BookingModal: React.FC<BookingModalProps> = ({
           )}
 
           {/* Step 3: Confirmation */}
-          {step === 3 && (
+          {step === 3 && pricing && (
             <BookingConfirmationStep
               vehicle={vehicle}
               pickupDate={bookingData.pickupDate}
-              months={bookingData.months}
+              returnDate={bookingData.returnDate}
               pickupType={bookingData.pickupType}
               pickupLocation={bookingData.pickupLocation}
-              deliveryFee={bookingData.deliveryFee}
+              isStudent={bookingData.isStudent}
+              pricing={pricing}
               primaryDriver={bookingData.primaryDriver}
               additionalDrivers={bookingData.additionalDrivers}
               loading={loading}
               onSubmit={handleSubmit}
-              getReturnDateDisplay={getReturnDateDisplay}
             />
           )}
         </form>

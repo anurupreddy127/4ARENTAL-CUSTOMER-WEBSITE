@@ -1,6 +1,7 @@
 import React, { useCallback, useId, useMemo } from "react";
 import { Plus, Minus } from "lucide-react";
 import { Button } from "@/components/ui";
+import { useBookingConfig } from "@/hooks";
 import {
   PrimaryDriverForm,
   AdditionalDriverForm,
@@ -15,7 +16,10 @@ interface DriverInformationStepProps {
   primaryDriver: PrimaryDriverData;
   additionalDrivers: AdditionalDriverData[];
   showAdditionalDriver: boolean;
-  onPrimaryDriverChange: (field: keyof PrimaryDriverData, value: string) => void;
+  onPrimaryDriverChange: (
+    field: keyof PrimaryDriverData,
+    value: string
+  ) => void;
   onAdditionalDriverChange: (
     index: number,
     field: keyof AdditionalDriverData,
@@ -28,11 +32,6 @@ interface DriverInformationStepProps {
   isValid: boolean;
   disabled?: boolean;
 }
-
-// ============================================
-// CONSTANTS
-// ============================================
-const ADDITIONAL_DRIVER_FEE = 50;
 
 // ============================================
 // HELPER FUNCTIONS
@@ -58,6 +57,9 @@ export const DriverInformationStep: React.FC<DriverInformationStepProps> = ({
   disabled = false,
 }) => {
   const baseId = useId();
+
+  // Get additional driver fee from config
+  const { additionalDriverFee } = useBookingConfig();
 
   // ============================================
   // ELEMENT IDS
@@ -90,8 +92,8 @@ export const DriverInformationStep: React.FC<DriverInformationStepProps> = ({
     if (showAdditionalDriver) {
       return "Remove additional drivers section";
     }
-    return `Add additional driver for ${formatCurrency(ADDITIONAL_DRIVER_FEE)}`;
-  }, [showAdditionalDriver]);
+    return `Add additional driver for ${formatCurrency(additionalDriverFee)}`;
+  }, [showAdditionalDriver, additionalDriverFee]);
 
   // ============================================
   // HANDLERS
@@ -104,7 +106,11 @@ export const DriverInformationStep: React.FC<DriverInformationStepProps> = ({
   );
 
   const handleAdditionalDriverChange = useCallback(
-    (index: number, field: keyof AdditionalDriverData, value: string | boolean) => {
+    (
+      index: number,
+      field: keyof AdditionalDriverData,
+      value: string | boolean
+    ) => {
       onAdditionalDriverChange(index, field, value);
     },
     [onAdditionalDriverChange]
@@ -160,7 +166,7 @@ export const DriverInformationStep: React.FC<DriverInformationStepProps> = ({
               )}
             </h4>
             <p className="text-xs text-gray-500 mt-1">
-              {formatCurrency(ADDITIONAL_DRIVER_FEE)} per additional driver
+              {formatCurrency(additionalDriverFee)} per additional driver
             </p>
           </header>
 

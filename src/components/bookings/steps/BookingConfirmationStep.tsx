@@ -1,6 +1,6 @@
 import React, { useMemo, useCallback, useId } from "react";
-import { CreditCard, Info, CheckCircle } from "lucide-react";
-import { Vehicle } from "@/types";
+import { CreditCard, Info, CheckCircle, GraduationCap } from "lucide-react";
+import { Vehicle, BookingTotal } from "@/types";
 import { Button, Card } from "@/components/ui";
 import { PrimaryDriverData, AdditionalDriverData } from "../forms";
 
@@ -10,19 +10,19 @@ import { PrimaryDriverData, AdditionalDriverData } from "../forms";
 interface BookingConfirmationStepProps {
   vehicle: Vehicle;
   pickupDate: string;
-  months: number;
+  returnDate: string;
   pickupType: "store" | "delivery";
   pickupLocation: string;
-  deliveryFee: number;
+  isStudent: boolean;
+  pricing: BookingTotal;
   primaryDriver: PrimaryDriverData;
   additionalDrivers: AdditionalDriverData[];
   loading: boolean;
   onSubmit: () => void;
-  getReturnDateDisplay: () => string;
 }
 
 interface InfoBoxProps {
-  variant: "info" | "success";
+  variant: "info" | "success" | "student";
   title: string;
   children: React.ReactNode;
 }
@@ -30,21 +30,23 @@ interface InfoBoxProps {
 interface SummaryLineItemProps {
   label: string;
   value: string;
+  description?: string;
   isTotal?: boolean;
 }
 
 // ============================================
 // CONSTANTS
 // ============================================
-const ADDITIONAL_DRIVER_FEE = 50;
-const DAYS_PER_MONTH = 30;
 const REFUND_BUSINESS_DAYS = "5-7";
 
 // ============================================
 // HELPER FUNCTIONS
 // ============================================
 function formatCurrency(amount: number, showPlus = false): string {
-  const formatted = `$${amount.toLocaleString()}`;
+  const formatted = `$${amount.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
   return showPlus && amount > 0 ? `+${formatted}` : formatted;
 }
 
@@ -58,6 +60,79 @@ function formatPickupType(type: "store" | "delivery"): string {
 
 function formatAddress(driver: PrimaryDriverData): string {
   return `${driver.streetAddress}, ${driver.city}, ${driver.state} ${driver.zipCode}`;
+}
+
+function formatDateTime(dateString: string): string {
+  if (!dateString) return "";
+  return new Date(dateString).toLocaleString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function getRentalTypeLabel(rentalType: string): string {
+  switch (rentalType) {
+    case "semester":
+      return "Semester";
+    case "monthly":
+      return "Monthly";
+    case "weekly":
+    default:
+      return "Weekly";
+  }
+}
+
+function getDurationDescription(pricing: BookingTotal): string {
+  const { rentalDays, rentalType, pricingMethod } = pricing;
+
+  if (rentalType === "semester") {
+    return `${rentalDays} days (Semester rate)`;
+  }
+
+  if (pricingMethod === "monthly") {
+    const fullMonths = Math.floor(rentalDays / 30);
+    const overflowDays = rentalDays % 30;
+    if (overflowDays > 0) {
+      return `${fullMonths} ${pluralize(
+        fullMonths,
+        "month",
+        "months"
+      )} + ${overflowDays} ${pluralize(
+        overflowDays,
+        "day",
+        "days"
+      )} (${rentalDays} days total)`;
+    }
+    return `${fullMonths} ${pluralize(
+      fullMonths,
+      "month",
+      "months"
+    )} (${rentalDays} days)`;
+  }
+
+  // Weekly
+  const fullWeeks = Math.floor(rentalDays / 7);
+  const overflowDays = rentalDays % 7;
+  if (overflowDays > 0) {
+    return `${fullWeeks} ${pluralize(
+      fullWeeks,
+      "week",
+      "weeks"
+    )} + ${overflowDays} ${pluralize(
+      overflowDays,
+      "day",
+      "days"
+    )} (${rentalDays} days total)`;
+  }
+  return `${fullWeeks} ${pluralize(
+    fullWeeks,
+    "week",
+    "weeks"
+  )} (${rentalDays} days)`;
 }
 
 // ============================================
@@ -78,9 +153,20 @@ const InfoBox: React.FC<InfoBoxProps> = ({ variant, title, children }) => {
       icon: "text-green-600",
       text: "text-green-800",
     },
+    student: {
+      container: "bg-purple-50 border-purple-200",
+      icon: "text-purple-600",
+      text: "text-purple-800",
+    },
   };
 
-  const Icon = variant === "info" ? Info : CheckCircle;
+  const iconMap = {
+    info: Info,
+    success: CheckCircle,
+    student: GraduationCap,
+  };
+
+  const Icon = iconMap[variant];
   const style = styles[variant];
 
   return (
@@ -108,19 +194,25 @@ const InfoBox: React.FC<InfoBoxProps> = ({ variant, title, children }) => {
 const SummaryLineItem: React.FC<SummaryLineItemProps> = ({
   label,
   value,
+  description,
   isTotal = false,
 }) => (
   <div
-    className={`flex justify-between ${
-      isTotal ? "pt-2 border-t border-gray-300" : ""
+    className={`flex justify-between items-start ${
+      isTotal ? "pt-3 border-t border-gray-300" : ""
     }`}
   >
-    <dt className={isTotal ? "font-semibold text-gray-900" : "text-gray-600"}>
-      {label}
-    </dt>
+    <div className="flex-1">
+      <dt className={isTotal ? "font-semibold text-gray-900" : "text-gray-600"}>
+        {label}
+      </dt>
+      {description && <dd className="text-xs text-gray-500">{description}</dd>}
+    </div>
     <dd
       className={
-        isTotal ? "text-xl font-bold text-gray-900" : "font-medium text-gray-900"
+        isTotal
+          ? "text-xl font-bold text-gray-900"
+          : "font-medium text-gray-900"
       }
     >
       {value}
@@ -154,52 +246,45 @@ const DetailItem: React.FC<{ label: string; value: string }> = ({
 // ============================================
 // MAIN COMPONENT
 // ============================================
-export const BookingConfirmationStep: React.FC<BookingConfirmationStepProps> = ({
+export const BookingConfirmationStep: React.FC<
+  BookingConfirmationStepProps
+> = ({
   vehicle,
   pickupDate,
-  months,
+  returnDate,
   pickupType,
   pickupLocation,
-  deliveryFee,
+  isStudent,
+  pricing,
   primaryDriver,
   additionalDrivers,
   loading,
   onSubmit,
-  getReturnDateDisplay,
 }) => {
   const baseId = useId();
 
   // ============================================
   // MEMOIZED VALUES
   // ============================================
-  const calculations = useMemo(() => {
-    const rentalTotal = months * vehicle.price;
-    const additionalDriverFee = additionalDrivers.length * ADDITIONAL_DRIVER_FEE;
-    const securityDeposit = vehicle.price;
-    const total = rentalTotal + deliveryFee + additionalDriverFee + securityDeposit;
-    const totalDays = months * DAYS_PER_MONTH;
+  const formattedPickupDate = useMemo(() => {
+    return formatDateTime(pickupDate);
+  }, [pickupDate]);
 
-    return {
-      rentalTotal,
-      additionalDriverFee,
-      securityDeposit,
-      total,
-      totalDays,
-    };
-  }, [months, vehicle.price, deliveryFee, additionalDrivers.length]);
+  const formattedReturnDate = useMemo(() => {
+    return formatDateTime(returnDate);
+  }, [returnDate]);
 
   const durationText = useMemo(() => {
-    const monthText = pluralize(months, "Month", "Months");
-    return `${months} ${monthText} (${calculations.totalDays} days)`;
-  }, [months, calculations.totalDays]);
-
-  const formattedPickupDate = useMemo(() => {
-    return new Date(pickupDate).toLocaleString();
-  }, [pickupDate]);
+    return getDurationDescription(pricing);
+  }, [pricing]);
 
   const primaryDriverAddress = useMemo(() => {
     return formatAddress(primaryDriver);
   }, [primaryDriver]);
+
+  const rentalTypeLabel = useMemo(() => {
+    return getRentalTypeLabel(pricing.rentalType);
+  }, [pricing.rentalType]);
 
   // ============================================
   // HANDLERS
@@ -229,14 +314,29 @@ export const BookingConfirmationStep: React.FC<BookingConfirmationStepProps> = (
         </h3>
       </header>
 
+      {/* Student Notice */}
+      {isStudent && pricing.rentalType === "semester" && (
+        <InfoBox variant="student" title="Student Pricing Applied">
+          <p>
+            You've selected student pricing. Please bring a valid student ID
+            when picking up your vehicle. Your student status will be verified
+            at pickup.
+          </p>
+        </InfoBox>
+      )}
+
       {/* Booking Details Card */}
       <Card variant="default" padding="lg" className="space-y-6">
         {/* Rental Details */}
         <DetailSection title="Rental Details" titleId={sectionIds.rental}>
           <DetailItem label="Vehicle" value={vehicle.name} />
-          <DetailItem label="Pickup Type" value={formatPickupType(pickupType)} />
+          <DetailItem label="Rental Type" value={rentalTypeLabel} />
+          <DetailItem
+            label="Pickup Type"
+            value={formatPickupType(pickupType)}
+          />
           <DetailItem label="Pickup" value={formattedPickupDate} />
-          <DetailItem label="Return" value={getReturnDateDisplay()} />
+          <DetailItem label="Return" value={formattedReturnDate} />
           <DetailItem label="Duration" value={durationText} />
           <DetailItem label="Location" value={pickupLocation} />
         </DetailSection>
@@ -250,14 +350,20 @@ export const BookingConfirmationStep: React.FC<BookingConfirmationStepProps> = (
           <DetailItem label="Email" value={primaryDriver.email} />
           <DetailItem label="Phone" value={primaryDriver.phone} />
           <DetailItem label="Date of Birth" value={primaryDriver.dateOfBirth} />
-          <DetailItem label="License" value={primaryDriver.driversLicenseNumber} />
+          <DetailItem
+            label="License"
+            value={primaryDriver.driversLicenseNumber}
+          />
           <DetailItem label="Address" value={primaryDriverAddress} />
         </DetailSection>
 
         {/* Additional Drivers */}
         {additionalDrivers.length > 0 && (
           <section aria-labelledby={sectionIds.additional}>
-            <h4 id={sectionIds.additional} className="font-medium text-gray-900 mb-2">
+            <h4
+              id={sectionIds.additional}
+              className="font-medium text-gray-900 mb-2"
+            >
               Additional Drivers ({additionalDrivers.length})
             </h4>
             <ul className="text-sm text-gray-600 space-y-3" role="list">
@@ -297,37 +403,71 @@ export const BookingConfirmationStep: React.FC<BookingConfirmationStepProps> = (
             Pricing Summary
           </h4>
           <dl className="space-y-2 text-sm">
-            <SummaryLineItem
-              label="Monthly Rate:"
-              value={formatCurrency(vehicle.price)}
-            />
+            {/* Rate info based on pricing method */}
+            {pricing.rentalType === "semester" ? (
+              <SummaryLineItem
+                label="Semester Rate:"
+                value={formatCurrency(pricing.rentalAmount)}
+              />
+            ) : pricing.pricingMethod === "monthly" ? (
+              <SummaryLineItem
+                label="Monthly Rate:"
+                value={`${formatCurrency(pricing.monthlyRate)}/month`}
+                description={
+                  pricing.dailyRate > 0
+                    ? `Daily rate: ${formatCurrency(pricing.dailyRate)}/day`
+                    : undefined
+                }
+              />
+            ) : (
+              <SummaryLineItem
+                label="Weekly Rate:"
+                value={`${formatCurrency(pricing.weeklyRate)}/week`}
+                description={
+                  pricing.dailyRate > 0
+                    ? `Daily rate: ${formatCurrency(pricing.dailyRate)}/day`
+                    : undefined
+                }
+              />
+            )}
+
             <SummaryLineItem
               label="Duration:"
-              value={`${months} ${pluralize(months, "Month", "Months")}`}
+              value={`${pricing.rentalDays} days`}
             />
+
             <SummaryLineItem
               label="Rental Total:"
-              value={formatCurrency(calculations.rentalTotal)}
+              value={formatCurrency(pricing.rentalAmount)}
             />
-            {deliveryFee > 0 && (
+
+            {pricing.deliveryFee > 0 && (
               <SummaryLineItem
                 label="Delivery Fee:"
-                value={formatCurrency(deliveryFee, true)}
+                value={formatCurrency(pricing.deliveryFee, true)}
               />
             )}
-            {additionalDrivers.length > 0 && (
+
+            {pricing.additionalDriverFee > 0 && (
               <SummaryLineItem
                 label={`Additional Drivers (${additionalDrivers.length}):`}
-                value={formatCurrency(calculations.additionalDriverFee, true)}
+                value={formatCurrency(pricing.additionalDriverFee, true)}
               />
             )}
+
             <SummaryLineItem
               label="Security Deposit (Refundable):"
-              value={formatCurrency(calculations.securityDeposit, true)}
+              value={formatCurrency(pricing.securityDeposit, true)}
+              description={
+                pricing.rentalType === "weekly"
+                  ? "Fixed weekly deposit"
+                  : "One month's rent"
+              }
             />
+
             <SummaryLineItem
               label="Total Due Now:"
-              value={formatCurrency(calculations.total)}
+              value={formatCurrency(pricing.totalDueNow)}
               isTotal
             />
           </dl>
@@ -339,17 +479,24 @@ export const BookingConfirmationStep: React.FC<BookingConfirmationStepProps> = (
         <p className="mb-2">Your total payment includes:</p>
         <ul className="list-disc list-inside space-y-1 ml-2">
           <li>
-            <strong>Rental Fee:</strong> {formatCurrency(calculations.rentalTotal)} (
-            {months} {pluralize(months, "month", "months")})
+            <strong>Rental Fee:</strong> {formatCurrency(pricing.rentalAmount)}{" "}
+            ({pricing.rentalDays} days)
           </li>
-          {deliveryFee > 0 && (
+          {pricing.deliveryFee > 0 && (
             <li>
-              <strong>Delivery Fee:</strong> {formatCurrency(deliveryFee)}
+              <strong>Delivery Fee:</strong>{" "}
+              {formatCurrency(pricing.deliveryFee)}
+            </li>
+          )}
+          {pricing.additionalDriverFee > 0 && (
+            <li>
+              <strong>Additional Drivers:</strong>{" "}
+              {formatCurrency(pricing.additionalDriverFee)}
             </li>
           )}
           <li>
             <strong>Security Deposit:</strong>{" "}
-            {formatCurrency(calculations.securityDeposit)} (refundable)
+            {formatCurrency(pricing.securityDeposit)} (refundable)
           </li>
         </ul>
         <p className="mt-2">
@@ -374,7 +521,11 @@ export const BookingConfirmationStep: React.FC<BookingConfirmationStepProps> = (
         onClick={handleSubmit}
         disabled={loading}
         loading={loading}
-        icon={!loading ? <CreditCard className="w-4 h-4" aria-hidden="true" /> : undefined}
+        icon={
+          !loading ? (
+            <CreditCard className="w-4 h-4" aria-hidden="true" />
+          ) : undefined
+        }
         fullWidth
         aria-describedby={loading ? undefined : `${baseId}-payment-note`}
       >

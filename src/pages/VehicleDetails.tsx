@@ -23,6 +23,11 @@ import { Loader } from "@/components/ui/Loader";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Navbar, Footer } from "@/components/layout";
+import {
+  PrintButton,
+  VehicleDetailsPrint,
+  VehiclePrintData,
+} from "@/components/print";
 
 // ============================================
 // CONSTANTS
@@ -49,6 +54,43 @@ function logError(message: string, error: unknown): void {
   } else {
     console.error(`[VehicleDetails] ${message}:`, error);
   }
+}
+
+// Map vehicle data to print format
+function mapToVehiclePrintData(vehicle: Vehicle): VehiclePrintData {
+  const images = Array.isArray(vehicle.image) ? vehicle.image : [vehicle.image];
+
+  // Calculate rates from monthly price if not available
+  const monthlyRate = vehicle.price;
+  const weeklyRate = Math.round(monthlyRate / 4);
+  const dailyRate = Math.round(monthlyRate / 30);
+
+  return {
+    id: vehicle.id,
+    name: vehicle.name,
+    category: vehicle.category,
+    description: vehicle.description || "",
+    images: images,
+    dailyRate: dailyRate,
+    weeklyRate: weeklyRate,
+    monthlyRate: monthlyRate,
+    semesterRate: undefined, // Will show only if available
+    securityDeposit: 500, // Default security deposit
+    features: vehicle.features || [],
+    specs: {
+      seats: vehicle.specifications?.seats,
+      transmission: vehicle.specifications?.transmission,
+      fuelType: vehicle.specifications?.fuelType,
+      mileageLimit: vehicle.specifications?.mileage
+        ? `${vehicle.specifications.mileage.toLocaleString()} miles`
+        : undefined,
+      year: vehicle.specifications?.year,
+      make: vehicle.specifications?.brand,
+      model: vehicle.specifications?.model,
+      color: vehicle.specifications?.color,
+    },
+    isAvailable: vehicle.status === "available",
+  };
 }
 
 // ============================================
@@ -182,6 +224,12 @@ export const VehicleDetails: React.FC = () => {
   const pageDescription = useMemo(() => {
     if (!vehicle) return "Vehicle details";
     return `Rent the ${vehicle.specifications.year} ${vehicle.specifications.brand} ${vehicle.specifications.model}. ${vehicle.specifications.seats} seats, ${vehicle.specifications.transmission} transmission, ${vehicle.specifications.fuelType} fuel. Starting at $${vehicle.price}/month.`;
+  }, [vehicle]);
+
+  // Memoized print data
+  const vehiclePrintData = useMemo(() => {
+    if (!vehicle) return null;
+    return mapToVehiclePrintData(vehicle);
   }, [vehicle]);
 
   // ============================================
@@ -397,8 +445,11 @@ export const VehicleDetails: React.FC = () => {
       <main id="main-content">
         <div className="pt-32 pb-16">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            {/* Back Button */}
-            <nav aria-label="Breadcrumb" className="mb-8">
+            {/* Back Button & Print Button */}
+            <nav
+              aria-label="Breadcrumb"
+              className="mb-8 flex items-center justify-between"
+            >
               <button
                 type="button"
                 onClick={handleGoBack}
@@ -408,6 +459,18 @@ export const VehicleDetails: React.FC = () => {
                 <ArrowLeft className="w-4 h-4" aria-hidden="true" />
                 <span>Back</span>
               </button>
+
+              {/* Print Button */}
+              {vehiclePrintData && (
+                <PrintButton
+                  content={<VehicleDetailsPrint data={vehiclePrintData} />}
+                  title={vehicle.name}
+                  variant="secondary"
+                  size="sm"
+                  label="Print Details"
+                  showPreview={true}
+                />
+              )}
             </nav>
 
             {/* Vehicle Image Gallery */}
@@ -664,10 +727,23 @@ export const VehicleDetails: React.FC = () => {
                     variant="primary"
                     fullWidth
                     size="lg"
-                    className="mb-6"
+                    className="mb-4"
                   >
                     {currentUser ? "Book This Vehicle" : "Sign In to Book"}
                   </Button>
+
+                  {/* Print Button in Sidebar */}
+                  {vehiclePrintData && (
+                    <PrintButton
+                      content={<VehicleDetailsPrint data={vehiclePrintData} />}
+                      title={vehicle.name}
+                      variant="secondary"
+                      size="md"
+                      label="Print Vehicle Details"
+                      showPreview={true}
+                      className="w-full mb-6"
+                    />
+                  )}
 
                   <div className="border-t border-bg-200 pt-6">
                     <h3 className="font-heading text-sm uppercase tracking-wide text-text-100 mb-4">

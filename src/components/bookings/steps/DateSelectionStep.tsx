@@ -1,6 +1,17 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import React, { useMemo, useCallback, useId } from "react";
-import { Calendar, MapPin, Truck, Building2, ChevronDown } from "lucide-react";
-import { Vehicle } from "@/types";
+import {
+  Calendar,
+  MapPin,
+  Truck,
+  Building2,
+  ChevronDown,
+  GraduationCap,
+  AlertCircle,
+  Info,
+  AlertTriangle,
+} from "lucide-react";
+import { Vehicle, BookingTotal, RentalType } from "@/types";
 import { Button, Card } from "@/components/ui";
 import { Loader } from "@/components/ui/Loader";
 import { PickupTypeSelector } from "../shared";
@@ -9,16 +20,26 @@ import {
   DeliveryLocation,
   CityOption,
 } from "@/services/deliveryLocations/deliveryLocationService";
+import { useBookingConfig } from "@/hooks";
+import { DeliveryTimeSlotSelector } from "../shared";
 
 // ============================================
 // TYPES
 // ============================================
 type PickupType = "store" | "delivery";
 
+interface DateValidationResult {
+  isValid: boolean;
+  errors: string[];
+  rentalDays: number;
+  rentalType: RentalType | null;
+}
+
 interface DateSelectionStepProps {
   vehicle: Vehicle;
   pickupDate: string;
-  months: number;
+  returnDate: string;
+  isStudent: boolean;
   pickupType: PickupType;
   pickupLocation: string;
   // City selection (two-step)
@@ -32,13 +53,26 @@ interface DateSelectionStepProps {
   deliveryLocationId: string;
   deliveryFee: number;
   onDeliveryLocationChange: (locationId: string) => void;
+  // Date handlers
+  onPickupDateChange: (date: string) => void;
+  onReturnDateChange: (date: string) => void;
+  onIsStudentChange: (isStudent: boolean) => void;
+  onPickupTypeChange: (type: PickupType) => void;
+  // Validation
+  dateValidation: DateValidationResult;
+  // Pricing
+  pricing: BookingTotal | null;
+  pricingLoading: boolean;
   // Other props
   additionalDriverCount: number;
-  onPickupDateChange: (date: string) => void;
-  onMonthsChange: (months: number) => void;
-  onPickupTypeChange: (type: PickupType) => void;
   onContinue: () => void;
   isValid: boolean;
+  deliveryTimeSlot: string | null;
+  onDeliveryTimeSlotChange: (slot: string) => void;
+  // Add availability props
+  isDateBlocked: (date: Date | string) => boolean;
+  getBlockedReason: (date: Date | string) => string | null;
+  availabilityLoading: boolean;
 }
 
 interface SelectWithIconProps {
@@ -58,10 +92,7 @@ interface LoadingStateProps {
 // ============================================
 // CONSTANTS
 // ============================================
-const DAYS_PER_MONTH = 30;
-const MAX_RENTAL_MONTHS = 12;
 const STORE_LOCATION_HINT = "Pick up your vehicle at our store location";
-const PICKUP_DATE_HINT = "Select your preferred pickup date and time";
 
 // ============================================
 // HELPER FUNCTIONS
@@ -74,31 +105,57 @@ function pluralize(count: number, singular: string, plural: string): string {
   return count === 1 ? singular : plural;
 }
 
-function calculateReturnDate(pickupDate: string, months: number): string {
-  if (!pickupDate) return "";
-  const pickup = new Date(pickupDate);
-  const returnDate = new Date(pickup);
-  returnDate.setDate(returnDate.getDate() + months * DAYS_PER_MONTH);
-  return returnDate.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+/**
+ * Get minimum pickup date (now + lead time from config)
+ */
+function getMinPickupDate(leadTimeHours: number): string {
+  const minDate = new Date();
+  minDate.setHours(minDate.getHours() + leadTimeHours);
+  return minDate.toISOString().slice(0, 16);
 }
 
-function getMinPickupDate(): string {
-  return new Date().toISOString().slice(0, 16);
+/**
+ * Get maximum pickup date (now + max advance days from config)
+ */
+function getMaxPickupDate(maxAdvanceDays: number): string {
+  const maxDate = new Date();
+  maxDate.setDate(maxDate.getDate() + maxAdvanceDays);
+  return maxDate.toISOString().slice(0, 16);
+}
+
+/**
+ * Get minimum return date (pickup + min rental days from config)
+ */
+function getMinReturnDate(pickupDate: string, minRentalDays: number): string {
+  if (!pickupDate) return "";
+  const pickup = new Date(pickupDate);
+  pickup.setDate(pickup.getDate() + minRentalDays);
+  return pickup.toISOString().slice(0, 16);
 }
 
 function formatLocationOption(location: DeliveryLocation): string {
-  return `${location.name} - ${formatCurrency(location.deliveryFee)} delivery fee`;
+  return `${location.name} - ${formatCurrency(
+    location.deliveryFee
+  )} delivery fee`;
 }
 
 function formatCityOption(city: CityOption): string {
   const locationText = pluralize(city.locationCount, "location", "locations");
-  return `${city.city}, ${city.state} (${city.locationCount} ${locationText} - from ${formatCurrency(city.minFee)})`;
+  return `${city.city}, ${city.state} (${
+    city.locationCount
+  } ${locationText} - from ${formatCurrency(city.minFee)})`;
+}
+
+function formatDisplayDate(dateString: string): string {
+  if (!dateString) return "";
+  return new Date(dateString).toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 // ============================================
@@ -111,6 +168,23 @@ const LoadingState: React.FC<LoadingStateProps> = ({ label }) => (
     aria-label={label}
   >
     <Loader />
+  </div>
+);
+
+// Add a new sub-component for blocked date warning:
+const BlockedDateWarning: React.FC<{ reason: string }> = ({ reason }) => (
+  <div
+    role="alert"
+    className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-2"
+  >
+    <AlertTriangle
+      className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5"
+      aria-hidden="true"
+    />
+    <div>
+      <p className="text-sm font-medium text-amber-800">Date Not Available</p>
+      <p className="text-sm text-amber-700 mt-0.5">{reason}</p>
+    </div>
   </div>
 );
 
@@ -179,7 +253,9 @@ const LocationDetailsCard: React.FC<{
       {location.notes && (
         <>
           <dt className="sr-only">Notes</dt>
-          <dd className="text-blue-600 text-xs mt-1 italic">{location.notes}</dd>
+          <dd className="text-blue-600 text-xs mt-1 italic">
+            {location.notes}
+          </dd>
         </>
       )}
 
@@ -191,27 +267,116 @@ const LocationDetailsCard: React.FC<{
   </Card>
 );
 
-const ReturnDateCard: React.FC<{
+const RentalDurationCard: React.FC<{
+  pickupDate: string;
   returnDate: string;
-  totalDays: number;
-}> = ({ returnDate, totalDays }) => {
+  rentalDays: number;
+  rentalType: RentalType | null;
+}> = ({ pickupDate, returnDate, rentalDays, rentalType }) => {
   const cardId = useId();
+
+  if (!pickupDate || !returnDate) return null;
 
   return (
     <Card variant="colored" padding="md">
       <div className="flex items-center gap-2 mb-2">
         <Calendar className="w-4 h-4 text-blue-600" aria-hidden="true" />
         <p id={cardId} className="text-sm font-medium text-blue-900">
-          Return Date (Auto-calculated)
+          Rental Duration
         </p>
       </div>
-      <p className="text-blue-800 font-semibold" aria-labelledby={cardId}>
-        {returnDate}
-      </p>
-      <p className="text-xs text-blue-700 mt-1">{totalDays} days from pickup date</p>
+      <div className="space-y-1">
+        <p className="text-blue-800">
+          <span className="font-semibold">{rentalDays} days</span>
+          {rentalType && (
+            <span className="text-blue-600 ml-2 text-sm">
+              (
+              {rentalType === "weekly"
+                ? "Weekly"
+                : rentalType === "monthly"
+                ? "Monthly"
+                : "Semester"}{" "}
+              rate)
+            </span>
+          )}
+        </p>
+        <p className="text-xs text-blue-700">
+          {formatDisplayDate(pickupDate)} → {formatDisplayDate(returnDate)}
+        </p>
+      </div>
     </Card>
   );
 };
+
+const StudentCheckbox: React.FC<{
+  isStudent: boolean;
+  onChange: (checked: boolean) => void;
+  id: string;
+}> = ({ isStudent, onChange, id }) => {
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      onChange(e.target.checked);
+    },
+    [onChange]
+  );
+
+  return (
+    <Card variant="default" padding="md">
+      <label htmlFor={id} className="flex items-start gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          id={id}
+          checked={isStudent}
+          onChange={handleChange}
+          className="mt-1 w-5 h-5 rounded border-gray-300 text-gray-900 focus:ring-gray-900 cursor-pointer"
+        />
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <GraduationCap
+              className="w-5 h-5 text-blue-600"
+              aria-hidden="true"
+            />
+            <span className="font-medium text-gray-900">I am a student</span>
+          </div>
+          <p className="text-sm text-gray-500 mt-1">
+            Get special semester pricing when you verify your student status at
+            pickup. You'll need to show a valid student ID.
+          </p>
+        </div>
+      </label>
+    </Card>
+  );
+};
+
+const ValidationErrors: React.FC<{ errors: string[] }> = ({ errors }) => {
+  if (errors.length === 0) return null;
+
+  return (
+    <div
+      role="alert"
+      className="bg-red-50 border border-red-200 rounded-lg p-3"
+    >
+      <div className="flex items-start gap-2">
+        <AlertCircle
+          className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5"
+          aria-hidden="true"
+        />
+        <ul className="text-sm text-red-700 space-y-1">
+          {errors.map((error, index) => (
+            <li key={index}>{error}</li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+};
+
+const MinRentalDaysInfo: React.FC<{ minDays: number }> = ({ minDays }) => (
+  <div className="flex items-start gap-2 text-xs text-gray-500 mt-2">
+    <Info className="w-4 h-4 flex-shrink-0 mt-0.5" aria-hidden="true" />
+    <span>Minimum rental duration is {minDays} days</span>
+  </div>
+);
 
 // ============================================
 // MAIN COMPONENT
@@ -219,7 +384,8 @@ const ReturnDateCard: React.FC<{
 export const DateSelectionStep: React.FC<DateSelectionStepProps> = ({
   vehicle,
   pickupDate,
-  months,
+  returnDate,
+  isStudent,
   pickupType,
   pickupLocation,
   // City selection
@@ -233,44 +399,58 @@ export const DateSelectionStep: React.FC<DateSelectionStepProps> = ({
   deliveryLocationId,
   deliveryFee,
   onDeliveryLocationChange,
+  // Date handlers
+  onPickupDateChange,
+  onReturnDateChange,
+  onIsStudentChange,
+  onPickupTypeChange,
+  // Validation
+  dateValidation,
+  // Pricing
+  pricing,
+  pricingLoading,
   // Other props
   additionalDriverCount,
-  onPickupDateChange,
-  onMonthsChange,
-  onPickupTypeChange,
   onContinue,
   isValid,
+  deliveryTimeSlot,
+  onDeliveryTimeSlotChange,
+  isDateBlocked,
+  getBlockedReason,
+  availabilityLoading,
 }) => {
   const baseId = useId();
+
+  // Get config values for date constraints
+  const {
+    minLeadTimeHours,
+    maxAdvanceDays,
+    minRentalDays,
+    loading: configLoading,
+  } = useBookingConfig();
 
   // ============================================
   // MEMOIZED VALUES
   // ============================================
-  const minPickupDate = useMemo(() => getMinPickupDate(), []);
-
-  const returnDate = useMemo(
-    () => calculateReturnDate(pickupDate, months),
-    [pickupDate, months]
+  const minPickupDate = useMemo(
+    () => getMinPickupDate(minLeadTimeHours),
+    [minLeadTimeHours]
   );
 
-  const totalDays = useMemo(() => months * DAYS_PER_MONTH, [months]);
+  const maxPickupDate = useMemo(
+    () => getMaxPickupDate(maxAdvanceDays),
+    [maxAdvanceDays]
+  );
+
+  const minReturnDate = useMemo(
+    () => getMinReturnDate(pickupDate, minRentalDays),
+    [pickupDate, minRentalDays]
+  );
 
   const selectedLocation = useMemo(
     () => cityLocations.find((loc) => loc.id === deliveryLocationId),
     [cityLocations, deliveryLocationId]
   );
-
-  const durationOptions = useMemo(() => {
-    return Array.from({ length: MAX_RENTAL_MONTHS }, (_, index) => {
-      const monthCount = index + 1;
-      const monthText = pluralize(monthCount, "Month", "Months");
-      const total = formatCurrency(vehicle.price * monthCount);
-      return {
-        value: monthCount,
-        label: `${monthCount} ${monthText} (${total})`,
-      };
-    });
-  }, [vehicle.price]);
 
   const hasNoCities = useMemo(
     () => availableCities.length === 0 && !loadingCities,
@@ -282,21 +462,74 @@ export const DateSelectionStep: React.FC<DateSelectionStepProps> = ({
     [cityLocations.length, loadingCityLocations, selectedCity]
   );
 
+  const pickupDateBlocked = useMemo(() => {
+    if (!pickupDate) return null;
+    const reason = getBlockedReason(pickupDate);
+    return reason;
+  }, [pickupDate, getBlockedReason]);
+
+  const returnDateBlocked = useMemo(() => {
+    if (!returnDate) return null;
+    const reason = getBlockedReason(returnDate);
+    return reason;
+  }, [returnDate, getBlockedReason]);
+
+  // Check if any date in the range is blocked BY A BOOKING (not holidays)
+  // Holidays only affect pickup/return dates, not dates in between
+  const rangeHasBookingConflict = useMemo(() => {
+    if (!pickupDate || !returnDate) return null;
+
+    const start = new Date(pickupDate);
+    const end = new Date(returnDate);
+    const current = new Date(start);
+
+    // Skip first and last day (those are checked separately as pickup/return)
+    current.setDate(current.getDate() + 1);
+    const endCheck = new Date(end);
+    endCheck.setDate(endCheck.getDate() - 1);
+
+    while (current <= endCheck) {
+      const reason = getBlockedReason(current);
+      if (reason && reason.includes("already booked")) {
+        // Only flag booking conflicts, not holidays
+        return {
+          date: current.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+          }),
+          reason,
+        };
+      }
+      current.setDate(current.getDate() + 1);
+    }
+
+    return null;
+  }, [pickupDate, returnDate, getBlockedReason]);
+
   // ============================================
   // HANDLERS
   // ============================================
   const handlePickupDateChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      onPickupDateChange(e.target.value);
+      const newPickupDate = e.target.value;
+      onPickupDateChange(newPickupDate);
+
+      // If return date is before new minimum, clear it
+      if (returnDate && newPickupDate) {
+        const newMinReturn = getMinReturnDate(newPickupDate, minRentalDays);
+        if (returnDate < newMinReturn) {
+          onReturnDateChange("");
+        }
+      }
     },
-    [onPickupDateChange]
+    [onPickupDateChange, returnDate, minRentalDays, onReturnDateChange]
   );
 
-  const handleMonthsChange = useCallback(
-    (e: React.ChangeEvent<HTMLSelectElement>) => {
-      onMonthsChange(parseInt(e.target.value, 10));
+  const handleReturnDateChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      onReturnDateChange(e.target.value);
     },
-    [onMonthsChange]
+    [onReturnDateChange]
   );
 
   const handleCityChange = useCallback(
@@ -330,10 +563,17 @@ export const DateSelectionStep: React.FC<DateSelectionStepProps> = ({
       deliveryLocation: `${baseId}-delivery-location`,
       pickupDate: `${baseId}-pickup-date`,
       pickupDateHint: `${baseId}-pickup-hint`,
-      rentalDuration: `${baseId}-rental-duration`,
+      returnDate: `${baseId}-return-date`,
+      returnDateHint: `${baseId}-return-hint`,
+      studentCheckbox: `${baseId}-student`,
     }),
     [baseId]
   );
+
+  // Loading state
+  if (configLoading) {
+    return <LoadingState label="Loading configuration" />;
+  }
 
   // ============================================
   // RENDER
@@ -341,7 +581,10 @@ export const DateSelectionStep: React.FC<DateSelectionStepProps> = ({
   return (
     <div className="space-y-6">
       <header>
-        <h3 id={ids.heading} className="text-lg font-semibold text-gray-900 mb-4">
+        <h3
+          id={ids.heading}
+          className="text-lg font-semibold text-gray-900 mb-4"
+        >
           Select Rental Details
         </h3>
       </header>
@@ -404,7 +647,9 @@ export const DateSelectionStep: React.FC<DateSelectionStepProps> = ({
                 value={selectedCity}
                 onChange={handleCityChange}
                 icon={<Building2 className="w-5 h-5" />}
-                aria-describedby={hasNoCities ? ids.deliveryCityHint : undefined}
+                aria-describedby={
+                  hasNoCities ? ids.deliveryCityHint : undefined
+                }
               >
                 <option value="">Select a city...</option>
                 {availableCities.map((city) => (
@@ -467,12 +712,19 @@ export const DateSelectionStep: React.FC<DateSelectionStepProps> = ({
               deliveryFee={deliveryFee}
             />
           )}
+          {/* Delivery Time Slot - Show after location is selected */}
+          {selectedLocation && (
+            <DeliveryTimeSlotSelector
+              selectedSlot={deliveryTimeSlot}
+              onSelect={onDeliveryTimeSlotChange}
+            />
+          )}
         </fieldset>
       )}
 
-      {/* Date and Duration */}
+      {/* Date Selection */}
       <fieldset className="grid md:grid-cols-2 gap-6">
-        <legend className="sr-only">Pickup date and rental duration</legend>
+        <legend className="sr-only">Pickup and return dates</legend>
 
         {/* Pickup Date */}
         <div>
@@ -493,56 +745,110 @@ export const DateSelectionStep: React.FC<DateSelectionStepProps> = ({
               value={pickupDate}
               onChange={handlePickupDateChange}
               min={minPickupDate}
-              className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+              max={maxPickupDate}
+              className={`w-full pl-10 pr-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent ${
+                pickupDateBlocked
+                  ? "border-amber-300 bg-amber-50"
+                  : "border-gray-200"
+              }`}
               required
               aria-describedby={ids.pickupDateHint}
             />
           </div>
           <p id={ids.pickupDateHint} className="text-xs text-gray-500 mt-1">
-            {PICKUP_DATE_HINT}
+            Earliest pickup: {minLeadTimeHours} hours from now
           </p>
+          {pickupDateBlocked && (
+            <div className="mt-2">
+              <BlockedDateWarning reason={pickupDateBlocked} />
+            </div>
+          )}
         </div>
 
-        {/* Rental Duration */}
+        {/* Return Date */}
         <div>
           <label
-            htmlFor={ids.rentalDuration}
+            htmlFor={ids.returnDate}
             className="block text-sm font-medium text-gray-600 mb-2"
           >
-            Rental Duration
+            Return Date
           </label>
           <div className="relative">
-            <select
-              id={ids.rentalDuration}
-              value={months}
-              onChange={handleMonthsChange}
-              className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent appearance-none bg-white pr-10"
+            <Calendar
+              className="absolute left-3 top-3 w-5 h-5 text-gray-400 pointer-events-none"
+              aria-hidden="true"
+            />
+            <input
+              id={ids.returnDate}
+              type="datetime-local"
+              value={returnDate}
+              onChange={handleReturnDateChange}
+              min={minReturnDate}
+              disabled={!pickupDate}
+              className={`w-full pl-10 pr-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed ${
+                returnDateBlocked
+                  ? "border-amber-300 bg-amber-50"
+                  : "border-gray-200"
+              }`}
               required
-            >
-              {durationOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <SelectChevron />
+              aria-describedby={ids.returnDateHint}
+            />
           </div>
+          {!pickupDate ? (
+            <p id={ids.returnDateHint} className="text-xs text-gray-500 mt-1">
+              Select pickup date first
+            </p>
+          ) : (
+            <MinRentalDaysInfo minDays={minRentalDays} />
+          )}
+          {returnDateBlocked && (
+            <div className="mt-2">
+              <BlockedDateWarning reason={returnDateBlocked} />
+            </div>
+          )}
         </div>
       </fieldset>
 
-      {/* Auto-calculated Return Date */}
-      {pickupDate && (
-        <ReturnDateCard returnDate={returnDate} totalDays={totalDays} />
+      {/* Range has booking conflict warning */}
+      {rangeHasBookingConflict && !pickupDateBlocked && !returnDateBlocked && (
+        <BlockedDateWarning
+          reason={`${rangeHasBookingConflict.date}: ${rangeHasBookingConflict.reason}. Please select different dates.`}
+        />
       )}
 
+      {/* Validation Errors */}
+      {pickupDate && returnDate && (
+        <ValidationErrors errors={dateValidation.errors} />
+      )}
+
+      {/* Validation Errors */}
+      {pickupDate && returnDate && (
+        <ValidationErrors errors={dateValidation.errors} />
+      )}
+
+      {/* Rental Duration Card */}
+      {dateValidation.isValid && (
+        <RentalDurationCard
+          pickupDate={pickupDate}
+          returnDate={returnDate}
+          rentalDays={dateValidation.rentalDays}
+          rentalType={dateValidation.rentalType}
+        />
+      )}
+
+      {/* Student Checkbox */}
+      <StudentCheckbox
+        isStudent={isStudent}
+        onChange={onIsStudentChange}
+        id={ids.studentCheckbox}
+      />
+
       {/* Pricing Summary */}
-      {pickupDate && (
+      {dateValidation.isValid && (
         <PricingSummary
-          vehicle={vehicle}
-          months={months}
-          deliveryFee={deliveryFee}
-          additionalDriverCount={additionalDriverCount}
-          showDeposit
+          pricing={pricing}
+          loading={pricingLoading}
+          isStudent={isStudent}
         />
       )}
 
@@ -550,14 +856,14 @@ export const DateSelectionStep: React.FC<DateSelectionStepProps> = ({
       <Button
         type="button"
         onClick={handleContinue}
-        disabled={!isValid}
+        disabled={!isValid || pricingLoading}
         fullWidth
         aria-describedby={!isValid ? `${baseId}-validation-hint` : undefined}
       >
-        Continue to Driver Details
+        {pricingLoading ? "Calculating Price..." : "Continue to Driver Details"}
       </Button>
 
-      {!isValid && (
+      {!isValid && !pricingLoading && (
         <p id={`${baseId}-validation-hint`} className="sr-only">
           Please complete all required fields to continue
         </p>
