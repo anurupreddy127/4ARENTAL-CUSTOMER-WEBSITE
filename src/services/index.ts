@@ -4,3 +4,5 @@ export * from "./contact/contactService";
 export * from "./drivers/driverService";
 export * from "./config/configService";
 export * from "./pricing/pricingService";
+export * from "./extensions/extensionService";
+export * from "./insurance/insuranceService";

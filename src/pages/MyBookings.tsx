@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Helmet } from "react-helmet-async";
 import * as Sentry from "@sentry/react";
 import {
@@ -18,10 +18,11 @@ import {
   GraduationCap,
   FileText,
   CreditCard,
-  Shield,
   Sun,
   Sunset,
   Moon,
+  Upload,
+  X,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useBookings } from "@/hooks";
@@ -35,6 +36,7 @@ import {
   BookingReceiptPrint,
   BookingReceiptData,
 } from "@/components/print";
+import { InsuranceUploadModal, ExtendRentalModal } from "@/components/modals";
 
 // ============================================
 // CONSTANTS
@@ -230,6 +232,30 @@ function mapBookingToReceiptData(booking: Booking): BookingReceiptData {
 // SUB-COMPONENTS
 // ============================================
 
+/** Success Banner Component */
+const SuccessBanner: React.FC<{
+  message: string;
+  onDismiss: () => void;
+}> = ({ message, onDismiss }) => (
+  <div
+    className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6 flex items-center justify-between"
+    role="alert"
+  >
+    <div className="flex items-center gap-3">
+      <CheckCircle className="w-5 h-5 text-green-600" aria-hidden="true" />
+      <p className="text-green-800 font-medium">{message}</p>
+    </div>
+    <button
+      type="button"
+      onClick={onDismiss}
+      className="text-green-600 hover:text-green-800 transition-colors"
+      aria-label="Dismiss"
+    >
+      <X className="w-5 h-5" />
+    </button>
+  </div>
+);
+
 /** Booking Status Badge */
 const StatusBadge: React.FC<{ status: Booking["status"] }> = ({ status }) => {
   const badge = STATUS_BADGES[status] || STATUS_BADGES.pending;
@@ -328,7 +354,8 @@ const InsuranceStatus: React.FC<{
   uploaded: boolean;
   verified: boolean;
   status: Booking["status"];
-}> = ({ uploaded, verified, status }) => {
+  onUploadClick: () => void;
+}> = ({ uploaded, verified, status, onUploadClick }) => {
   // Don't show for completed/cancelled
   if (status === "completed" || status === "cancelled") return null;
 
@@ -358,6 +385,7 @@ const InsuranceStatus: React.FC<{
       </div>
       <button
         type="button"
+        onClick={onUploadClick}
         className="text-xs font-medium text-amber-800 hover:text-amber-900 underline"
       >
         Upload Now
@@ -499,12 +527,14 @@ const StatusMessage: React.FC<{ status: Booking["status"] }> = ({ status }) => {
 // ============================================
 interface BookingCardProps {
   booking: Booking;
+  onRefresh?: () => void;
 }
 
-const BookingCard: React.FC<BookingCardProps> = ({ booking }) => {
+const BookingCard: React.FC<BookingCardProps> = ({ booking, onRefresh }) => {
+  const [showInsuranceModal, setShowInsuranceModal] = useState(false);
+  const [showExtendModal, setShowExtendModal] = useState(false);
+
   const vehicle = booking.vehicle;
-  const pickupDate = new Date(booking.pickupDate);
-  const returnDate = new Date(booking.returnDate);
   const durationText = getDurationText(booking.rentalDays, booking.rentalType);
 
   // Print receipt data
@@ -513,179 +543,241 @@ const BookingCard: React.FC<BookingCardProps> = ({ booking }) => {
     [booking]
   );
 
+  const handleInsuranceUploadClick = useCallback(() => {
+    setShowInsuranceModal(true);
+  }, []);
+
+  const handleInsuranceModalClose = useCallback(() => {
+    setShowInsuranceModal(false);
+  }, []);
+
+  const handleExtendClick = useCallback(() => {
+    setShowExtendModal(true);
+  }, []);
+
+  const handleExtendModalClose = useCallback(() => {
+    setShowExtendModal(false);
+  }, []);
+
+  const handleInsuranceSuccess = useCallback(() => {
+    setShowInsuranceModal(false);
+    onRefresh?.();
+  }, [onRefresh]);
+
+  // Check if extension is allowed
+  const canExtend = useMemo(() => {
+    return (
+      (booking.status === "confirmed" || booking.status === "active") &&
+      booking.rentalType === "monthly" &&
+      (booking.extensionCount || 0) < 5
+    );
+  }, [booking]);
+
   return (
-    <Card variant="default" padding="none" className="overflow-hidden">
-      {/* Card Header with Booking Number */}
-      <div className="bg-gray-50 border-b border-gray-100 px-6 py-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <FileText className="w-5 h-5 text-gray-400" aria-hidden="true" />
-            <div>
-              <p className="text-xs text-gray-500 uppercase tracking-wide">
-                Booking Number
-              </p>
-              <p className="font-mono font-semibold text-gray-900">
-                {booking.bookingNumber || booking.id.slice(0, 8).toUpperCase()}
-              </p>
+    <>
+      <Card variant="default" padding="none" className="overflow-hidden">
+        {/* Card Header with Booking Number */}
+        <div className="bg-gray-50 border-b border-gray-100 px-6 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <FileText className="w-5 h-5 text-gray-400" aria-hidden="true" />
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wide">
+                  Booking Number
+                </p>
+                <p className="font-mono font-semibold text-gray-900">
+                  {booking.bookingNumber ||
+                    booking.id.slice(0, 8).toUpperCase()}
+                </p>
+              </div>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <StatusBadge status={booking.status} />
-            <PaymentStatusBadge status={booking.paymentStatus} />
+            <div className="flex items-center gap-2">
+              <StatusBadge status={booking.status} />
+              <PaymentStatusBadge status={booking.paymentStatus} />
+            </div>
           </div>
         </div>
-      </div>
 
-      <div className="p-6">
-        <article className="flex flex-col lg:flex-row gap-6">
-          {/* Vehicle Image */}
-          <div className="lg:w-56 flex-shrink-0">
-            {vehicle ? (
-              <img
-                src={
-                  Array.isArray(vehicle.image)
-                    ? vehicle.image[0]
-                    : vehicle.image
-                }
-                alt={vehicle.name}
-                className="w-full h-40 lg:h-full object-cover rounded-xl"
-                loading="lazy"
-              />
-            ) : (
-              <div
-                className="w-full h-40 lg:h-full bg-gray-200 rounded-xl flex items-center justify-center"
-                aria-label="Vehicle image not available"
-              >
-                <Car className="w-12 h-12 text-gray-300" aria-hidden="true" />
+        <div className="p-6">
+          <article className="flex flex-col lg:flex-row gap-6">
+            {/* Vehicle Image */}
+            <div className="lg:w-56 flex-shrink-0">
+              {vehicle ? (
+                <img
+                  src={
+                    Array.isArray(vehicle.image)
+                      ? vehicle.image[0]
+                      : vehicle.image
+                  }
+                  alt={vehicle.name}
+                  className="w-full h-40 lg:h-full object-cover rounded-xl"
+                  loading="lazy"
+                />
+              ) : (
+                <div
+                  className="w-full h-40 lg:h-full bg-gray-200 rounded-xl flex items-center justify-center"
+                  aria-label="Vehicle image not available"
+                >
+                  <Car className="w-12 h-12 text-gray-300" aria-hidden="true" />
+                </div>
+              )}
+            </div>
+
+            {/* Booking Details */}
+            <div className="flex-1 space-y-4">
+              {/* Vehicle Info */}
+              <div>
+                <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
+                  <div>
+                    <h3 className="text-xl font-semibold text-gray-900">
+                      {vehicle ? vehicle.name : "Vehicle Details Unavailable"}
+                    </h3>
+                    {vehicle && (
+                      <p className="text-gray-500 text-sm capitalize">
+                        {vehicle.specifications?.seats || "-"} seats •{" "}
+                        {vehicle.specifications?.transmission || "Automatic"} •{" "}
+                        {vehicle.specifications?.fuelType || "Gasoline"}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <RentalTypeBadge
+                      rentalType={booking.rentalType}
+                      isStudent={booking.isStudentBooking}
+                    />
+                    {booking.isStudentBooking && (
+                      <RentalTypeBadge rentalType={booking.rentalType} />
+                    )}
+                  </div>
+                </div>
               </div>
-            )}
-          </div>
 
-          {/* Booking Details */}
-          <div className="flex-1 space-y-4">
-            {/* Vehicle Info */}
-            <div>
-              <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
+              {/* Dates Grid */}
+              <div className="grid grid-cols-3 gap-4 bg-gray-50 rounded-lg p-4">
                 <div>
-                  <h3 className="text-xl font-semibold text-gray-900">
-                    {vehicle ? vehicle.name : "Vehicle Details Unavailable"}
-                  </h3>
-                  {vehicle && (
-                    <p className="text-gray-500 text-sm capitalize">
-                      {vehicle.specifications?.seats || "-"} seats •{" "}
-                      {vehicle.specifications?.transmission || "Automatic"} •{" "}
-                      {vehicle.specifications?.fuelType || "Gasoline"}
-                    </p>
-                  )}
+                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">
+                    Pickup
+                  </p>
+                  <p className="font-medium text-gray-900">
+                    {formatDate(booking.pickupDate)}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    {formatTime(booking.pickupDate)}
+                  </p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <RentalTypeBadge
-                    rentalType={booking.rentalType}
-                    isStudent={booking.isStudentBooking}
-                  />
-                  {booking.isStudentBooking && (
-                    <RentalTypeBadge rentalType={booking.rentalType} />
-                  )}
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">
+                    Return
+                  </p>
+                  <p className="font-medium text-gray-900">
+                    {formatDate(booking.returnDate)}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    {formatTime(booking.returnDate)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">
+                    Duration
+                  </p>
+                  <p className="font-medium text-gray-900">{durationText}</p>
                 </div>
               </div>
-            </div>
 
-            {/* Dates Grid */}
-            <div className="grid grid-cols-3 gap-4 bg-gray-50 rounded-lg p-4">
-              <div>
-                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">
-                  Pickup
-                </p>
-                <p className="font-medium text-gray-900">
-                  {formatDate(booking.pickupDate)}
-                </p>
-                <p className="text-xs text-gray-500">
-                  {formatTime(booking.pickupDate)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">
-                  Return
-                </p>
-                <p className="font-medium text-gray-900">
-                  {formatDate(booking.returnDate)}
-                </p>
-                <p className="text-xs text-gray-500">
-                  {formatTime(booking.returnDate)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">
-                  Duration
-                </p>
-                <p className="font-medium text-gray-900">{durationText}</p>
-              </div>
-            </div>
-
-            {/* Pickup Location */}
-            <PickupTypeDisplay
-              pickupType={booking.pickupType}
-              location={booking.pickupLocation}
-              timeSlot={booking.deliveryTimeSlot}
-            />
-
-            {/* Student Notice */}
-            {booking.isStudentBooking && (
-              <div className="flex items-center gap-2 text-sm text-purple-700 bg-purple-50 px-3 py-2 rounded-lg">
-                <GraduationCap className="w-4 h-4" aria-hidden="true" />
-                <span>
-                  {booking.studentVerified
-                    ? "Student discount verified"
-                    : "Student ID verification required at pickup"}
-                </span>
-              </div>
-            )}
-
-            {/* Insurance Status */}
-            <InsuranceStatus
-              uploaded={booking.insuranceUploaded}
-              verified={booking.insuranceVerified}
-              status={booking.status}
-            />
-
-            {/* Payment Summary */}
-            <PaymentSummary booking={booking} />
-
-            {/* Status Message */}
-            <StatusMessage status={booking.status} />
-
-            {/* Action Buttons */}
-            <div className="flex flex-wrap items-center gap-3 pt-2">
-              <PrintButton
-                content={<BookingReceiptPrint data={receiptData} />}
-                title={`Booking ${
-                  booking.bookingNumber || booking.id.slice(0, 8)
-                }`}
-                variant="secondary"
-                size="sm"
-                label="Print Receipt"
-                showPreview={true}
+              {/* Pickup Location */}
+              <PickupTypeDisplay
+                pickupType={booking.pickupType}
+                location={booking.pickupLocation}
+                timeSlot={booking.deliveryTimeSlot}
               />
 
-              {/* Future: Extend Rental Button */}
-              {(booking.status === "confirmed" ||
-                booking.status === "active") &&
-                booking.rentalType !== "semester" && (
+              {/* Student Notice */}
+              {booking.isStudentBooking && (
+                <div className="flex items-center gap-2 text-sm text-purple-700 bg-purple-50 px-3 py-2 rounded-lg">
+                  <GraduationCap className="w-4 h-4" aria-hidden="true" />
+                  <span>
+                    {booking.studentVerified
+                      ? "Student discount verified"
+                      : "Student ID verification required at pickup"}
+                  </span>
+                </div>
+              )}
+
+              {/* Insurance Status */}
+              <InsuranceStatus
+                uploaded={booking.insuranceUploaded}
+                verified={booking.insuranceVerified}
+                status={booking.status}
+                onUploadClick={handleInsuranceUploadClick}
+              />
+
+              {/* Payment Summary */}
+              <PaymentSummary booking={booking} />
+
+              {/* Status Message */}
+              <StatusMessage status={booking.status} />
+
+              {/* Action Buttons */}
+              <div className="flex flex-wrap items-center gap-3 pt-2">
+                <PrintButton
+                  content={<BookingReceiptPrint data={receiptData} />}
+                  title={`Booking ${
+                    booking.bookingNumber || booking.id.slice(0, 8)
+                  }`}
+                  variant="secondary"
+                  size="sm"
+                  label="Print Receipt"
+                  showPreview={true}
+                />
+
+                {/* Upload Insurance Button (if not uploaded) */}
+                {!booking.insuranceUploaded &&
+                  booking.status !== "completed" &&
+                  booking.status !== "cancelled" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleInsuranceUploadClick}
+                    >
+                      <Upload className="w-4 h-4 mr-1" />
+                      Upload Insurance
+                    </Button>
+                  )}
+
+                {/* Extend Rental Button */}
+                {canExtend && (
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled
-                    className="opacity-50"
+                    onClick={handleExtendClick}
                   >
                     <Calendar className="w-4 h-4 mr-1" />
-                    Extend Rental (Coming Soon)
+                    Extend Rental
                   </Button>
                 )}
+              </div>
             </div>
-          </div>
-        </article>
-      </div>
-    </Card>
+          </article>
+        </div>
+      </Card>
+
+      {/* Insurance Upload Modal */}
+      <InsuranceUploadModal
+        isOpen={showInsuranceModal}
+        onClose={handleInsuranceModalClose}
+        bookingId={booking.id}
+        userId={booking.userId}
+        bookingNumber={booking.bookingNumber}
+        onSuccess={handleInsuranceSuccess}
+      />
+
+      {/* Extend Rental Modal */}
+      <ExtendRentalModal
+        isOpen={showExtendModal}
+        onClose={handleExtendModalClose}
+        booking={booking}
+      />
+    </>
   );
 };
 
@@ -718,9 +810,32 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({ title, message }) => (
 export const MyBookings: React.FC = () => {
   const { currentUser, loading: authLoading } = useAuth();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [filter, setFilter] = useState<FilterValue>("all");
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  const { bookings, loading: bookingsLoading, error } = useBookings();
+  const { bookings, loading: bookingsLoading, error, refetch } = useBookings();
+
+  // Handle extension success/cancel from URL params
+  useEffect(() => {
+    const extensionStatus = searchParams.get("extension");
+    const bookingId = searchParams.get("booking_id");
+
+    if (extensionStatus === "success" && bookingId) {
+      console.log("[MyBookings] Extension successful for booking:", bookingId);
+      setSuccessMessage("Your rental has been extended successfully!");
+
+      // Clear the URL params
+      setSearchParams({});
+
+      // Refetch bookings to get updated data
+      refetch();
+    } else if (extensionStatus === "cancelled") {
+      console.log("[MyBookings] Extension cancelled");
+      // Clear the URL params
+      setSearchParams({});
+    }
+  }, [searchParams, setSearchParams, refetch]);
 
   // Redirect when not logged in
   useEffect(() => {
@@ -755,6 +870,10 @@ export const MyBookings: React.FC = () => {
 
   const handleFilterChange = useCallback((value: FilterValue) => {
     setFilter(value);
+  }, []);
+
+  const handleDismissSuccess = useCallback(() => {
+    setSuccessMessage(null);
   }, []);
 
   // Filtered bookings
@@ -816,6 +935,14 @@ export const MyBookings: React.FC = () => {
                 View and manage your vehicle rental bookings
               </p>
             </header>
+
+            {/* Success Banner */}
+            {successMessage && (
+              <SuccessBanner
+                message={successMessage}
+                onDismiss={handleDismissSuccess}
+              />
+            )}
 
             {/* Error Message */}
             {error && (
@@ -886,7 +1013,11 @@ export const MyBookings: React.FC = () => {
               <section aria-label="Bookings list">
                 <div className="space-y-6">
                   {filteredBookings.map((booking) => (
-                    <BookingCard key={booking.id} booking={booking} />
+                    <BookingCard
+                      key={booking.id}
+                      booking={booking}
+                      onRefresh={refetch}
+                    />
                   ))}
                 </div>
               </section>
