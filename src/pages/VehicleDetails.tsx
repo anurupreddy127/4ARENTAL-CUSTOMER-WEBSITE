@@ -15,9 +15,7 @@ import {
   MapPin,
   Phone,
   Mail,
-  GraduationCap,
   Shield,
-  Clock,
 } from "lucide-react";
 import { Vehicle, Review } from "@/types";
 import { useAuth } from "@/hooks/useAuth";
@@ -290,12 +288,7 @@ export const VehicleDetails: React.FC = () => {
 
   // Hooks
   const { rates, loading: ratesLoading } = useVehicleRates(vehicle?.id || null);
-  const {
-    reviews,
-    stats,
-    hasReviews,
-    loading: reviewsLoading,
-  } = useReviews({
+  const { reviews, stats, hasReviews } = useReviews({
     vehicleId: vehicle?.id || null,
     enabled: Boolean(vehicle?.id),
   });
