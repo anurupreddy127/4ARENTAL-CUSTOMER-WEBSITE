@@ -13,6 +13,7 @@ import { BookingSuccess } from "@/pages/BookingSuccess";
 import { BookingCancelled } from "@/pages/BookingCancelled";
 import { ErrorFallback } from "@/components/layout";
 import { AuthCallback } from "./pages/AuthCallback";
+import { ScrollToTop } from "./utils/ScrollToTop";
 
 function App() {
   return (
@@ -44,6 +45,7 @@ function App() {
 
       <AuthProvider>
         <Router>
+          <ScrollToTop />
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/auth/callback" element={<AuthCallback />} />

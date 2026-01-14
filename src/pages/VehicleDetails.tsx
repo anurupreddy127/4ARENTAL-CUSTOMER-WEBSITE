@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Helmet } from "react-helmet-async";
@@ -14,25 +15,24 @@ import {
   MapPin,
   Phone,
   Mail,
+  GraduationCap,
+  Shield,
+  Clock,
 } from "lucide-react";
-import { Vehicle } from "@/types";
+import { Vehicle, Review } from "@/types";
 import { useAuth } from "@/hooks/useAuth";
+import { usePricing, useVehicleRates } from "@/hooks/usePricing";
+import { useReviews } from "@/hooks/useReviews";
 import { vehicleService } from "@/services/vehicles/vehicleService";
 import { AuthModal, BookingModal } from "@/components/modals";
 import { Loader } from "@/components/ui/Loader";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Navbar, Footer } from "@/components/layout";
-import {
-  PrintButton,
-  VehicleDetailsPrint,
-  VehiclePrintData,
-} from "@/components/print";
 
 // ============================================
 // CONSTANTS
 // ============================================
-const RATING = 4.9;
 const MAX_STARS = 5;
 
 const CONTACT_INFO = {
@@ -56,119 +56,207 @@ function logError(message: string, error: unknown): void {
   }
 }
 
-// Map vehicle data to print format
-function mapToVehiclePrintData(vehicle: Vehicle): VehiclePrintData {
-  const images = Array.isArray(vehicle.image) ? vehicle.image : [vehicle.image];
+function formatCurrency(amount: number): string {
+  return `$${amount.toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  })}`;
+}
 
-  // Calculate rates from monthly price if not available
-  const monthlyRate = vehicle.price;
-  const weeklyRate = Math.round(monthlyRate / 4);
-  const dailyRate = Math.round(monthlyRate / 30);
+function formatDate(date: Date): string {
+  return date.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
 
-  return {
-    id: vehicle.id,
-    name: vehicle.name,
-    category: vehicle.category,
-    description: vehicle.description || "",
-    images: images,
-    dailyRate: dailyRate,
-    weeklyRate: weeklyRate,
-    monthlyRate: monthlyRate,
-    semesterRate: undefined, // Will show only if available
-    securityDeposit: 500, // Default security deposit
-    features: vehicle.features || [],
-    specs: {
-      seats: vehicle.specifications?.seats,
-      transmission: vehicle.specifications?.transmission,
-      fuelType: vehicle.specifications?.fuelType,
-      mileageLimit: vehicle.specifications?.mileage
-        ? `${vehicle.specifications.mileage.toLocaleString()} miles`
-        : undefined,
-      year: vehicle.specifications?.year,
-      make: vehicle.specifications?.brand,
-      model: vehicle.specifications?.model,
-      color: vehicle.specifications?.color,
-    },
-    isAvailable: vehicle.status === "available",
-  };
+function getMinDate(): string {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  return tomorrow.toISOString().split("T")[0];
+}
+
+function getDefaultReturnDate(pickupDate: string): string {
+  if (!pickupDate) return "";
+  const pickup = new Date(pickupDate);
+  pickup.setDate(pickup.getDate() + 7); // Default 7 days
+  return pickup.toISOString().split("T")[0];
 }
 
 // ============================================
 // SUB-COMPONENTS
 // ============================================
+
 interface StarRatingProps {
   rating: number;
-  size?: "sm" | "md";
+  size?: "sm" | "md" | "lg";
   showRating?: boolean;
+  totalReviews?: number;
 }
 
 const StarRating: React.FC<StarRatingProps> = ({
   rating,
   size = "md",
   showRating = true,
+  totalReviews,
 }) => {
-  const sizeClasses = size === "sm" ? "w-4 h-4" : "w-5 h-5";
+  const sizeClasses = {
+    sm: "w-4 h-4",
+    md: "w-5 h-5",
+    lg: "w-6 h-6",
+  };
 
   return (
     <div
-      className="flex items-center"
+      className="flex items-center gap-1"
       role="img"
       aria-label={`${rating} out of ${MAX_STARS} stars`}
     >
       {[...Array(MAX_STARS)].map((_, i) => (
         <Star
           key={i}
-          className={`${sizeClasses} text-primary-100 fill-current`}
+          className={`${sizeClasses[size]} ${
+            i < Math.floor(rating)
+              ? "text-primary-100 fill-current"
+              : "text-bg-300"
+          }`}
           aria-hidden="true"
         />
       ))}
       {showRating && (
-        <span
-          className={`ml-2 font-body text-text-200 ${
-            size === "sm" ? "text-sm" : ""
-          }`}
-        >
-          ({rating}
-          {size === "sm" ? " rating" : ""})
+        <span className="ml-1 font-body text-text-200 text-sm">
+          {rating.toFixed(1)}
+          {totalReviews !== undefined && (
+            <span className="text-text-200">
+              {" "}
+              ({totalReviews} review{totalReviews !== 1 ? "s" : ""})
+            </span>
+          )}
         </span>
       )}
     </div>
   );
 };
 
-interface SpecCardProps {
+interface SpecBadgeProps {
   icon: React.ReactNode;
   label: string;
-  value: string | number;
+  value: string;
 }
 
-const SpecCard: React.FC<SpecCardProps> = ({ icon, label, value }) => (
-  <Card variant="default" padding="md">
-    <div aria-hidden="true">{icon}</div>
-    <p className="font-body text-sm text-text-200 mt-3">{label}</p>
-    <p className="font-body text-xl font-bold text-text-100 capitalize">
-      {value}
-    </p>
-  </Card>
+const SpecBadge: React.FC<SpecBadgeProps> = ({ icon, label, value }) => (
+  <div className="flex flex-col items-center p-4 bg-bg-100 rounded-xl">
+    <div className="text-text-200 mb-2" aria-hidden="true">
+      {icon}
+    </div>
+    <p className="text-xs text-text-200 uppercase tracking-wide">{label}</p>
+    <p className="font-semibold text-text-100 capitalize">{value}</p>
+  </div>
+);
+
+interface PricingTierProps {
+  label: string;
+  rate: number;
+  period: string;
+  perDay?: number;
+  badge?: string;
+  badgeColor?: "green" | "blue";
+}
+
+const PricingTier: React.FC<PricingTierProps> = ({
+  label,
+  rate,
+  period,
+  perDay,
+  badge,
+  badgeColor = "green",
+}) => (
+  <div className="flex items-center justify-between p-4 border border-bg-200 rounded-xl hover:border-primary-200 transition-colors">
+    <div>
+      <p className="font-semibold text-text-100">{label}</p>
+      {perDay && (
+        <p className="text-sm text-text-200">${perDay.toFixed(0)}/day</p>
+      )}
+    </div>
+    <div className="text-right">
+      <p className="font-bold text-text-100 text-lg">{formatCurrency(rate)}</p>
+      <p className="text-xs text-text-200">{period}</p>
+      {badge && (
+        <span
+          className={`inline-block mt-1 text-xs px-2 py-0.5 rounded-full font-medium ${
+            badgeColor === "green"
+              ? "bg-green-100 text-green-700"
+              : "bg-blue-100 text-blue-700"
+          }`}
+        >
+          {badge}
+        </span>
+      )}
+    </div>
+  </div>
+);
+
+interface ReviewCardProps {
+  review: Review;
+}
+
+const ReviewCard: React.FC<ReviewCardProps> = ({ review }) => (
+  <div className="p-4 bg-white border border-bg-200 rounded-xl">
+    {/* Stars */}
+    <div className="flex items-center gap-1 mb-3">
+      {[...Array(MAX_STARS)].map((_, i) => (
+        <Star
+          key={i}
+          className={`w-4 h-4 ${
+            i < review.rating ? "text-primary-100 fill-current" : "text-bg-300"
+          }`}
+          aria-hidden="true"
+        />
+      ))}
+    </div>
+
+    {/* Comment */}
+    {review.comment && (
+      <p className="text-text-100 font-body mb-3">"{review.comment}"</p>
+    )}
+
+    {/* Reviewer info */}
+    <div className="flex items-center justify-between">
+      <div>
+        <p className="font-semibold text-text-100">{review.reviewerName}</p>
+        {review.isVerified && (
+          <p className="text-xs text-green-600 flex items-center gap-1">
+            <CheckCircle className="w-3 h-3" />
+            Verified Renter
+          </p>
+        )}
+      </div>
+      <p className="text-xs text-text-200">{formatDate(review.createdAt)}</p>
+    </div>
+  </div>
 );
 
 interface InfoItemProps {
   label: string;
   value: string | number | undefined;
   mono?: boolean;
-  subtext?: string;
 }
 
-const InfoItem: React.FC<InfoItemProps> = ({ label, value, mono, subtext }) => {
+const InfoItem: React.FC<InfoItemProps> = ({ label, value, mono }) => {
   if (!value) return null;
-
   return (
     <div>
-      <dt className="font-semibold text-text-100 mb-2">{label}</dt>
-      <dd className={`text-text-200 ${mono ? "font-mono text-xs" : ""}`}>
+      <dt className="text-xs text-text-200 uppercase tracking-wide mb-1">
+        {label}
+      </dt>
+      <dd
+        className={`text-text-100 font-medium ${
+          mono ? "font-mono text-sm" : ""
+        }`}
+      >
         {value}
       </dd>
-      {subtext && <p className="text-xs text-text-200 mt-1">{subtext}</p>}
     </div>
   );
 };
@@ -177,33 +265,50 @@ const InfoItem: React.FC<InfoItemProps> = ({ label, value, mono, subtext }) => {
 // MAIN COMPONENT
 // ============================================
 export const VehicleDetails: React.FC = () => {
-  // DEBUG: Component render
-  console.log("🚗 [VehicleDetails] ========== COMPONENT RENDER ==========");
-
-  // Router hooks
   const { id } = useParams<{ id: string }>();
-  console.log("🚗 [VehicleDetails] URL param id:", id);
-
   const navigate = useNavigate();
+  const { currentUser } = useAuth();
 
-  // Auth - get loading state too!
-  const { currentUser, loading: authLoading } = useAuth();
-  console.log("🚗 [VehicleDetails] Auth state:", {
-    hasUser: !!currentUser,
-    userId: currentUser?.id?.slice(0, 8),
-    authLoading,
-  });
-
-  // State
+  // Vehicle state
   const [vehicle, setVehicle] = useState<Vehicle | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Modal state
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
-  const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [authModalMode, setAuthModalMode] = useState<"login" | "register">(
     "login"
   );
+
+  // Image gallery state
+  const [currentImageIndex, setCurrentImageIndex] = useState(0);
+
+  // Price calculator state
+  const [pickupDate, setPickupDate] = useState("");
+  const [returnDate, setReturnDate] = useState("");
+
+  // Hooks
+  const { rates, loading: ratesLoading } = useVehicleRates(vehicle?.id || null);
+  const {
+    reviews,
+    stats,
+    hasReviews,
+    loading: reviewsLoading,
+  } = useReviews({
+    vehicleId: vehicle?.id || null,
+    enabled: Boolean(vehicle?.id),
+  });
+  const {
+    pricing,
+    loading: pricingLoading,
+    error: pricingError,
+  } = usePricing({
+    vehicleId: vehicle?.id || null,
+    pickupDate: pickupDate || null,
+    returnDate: returnDate || null,
+    enabled: Boolean(pickupDate && returnDate),
+  });
 
   // ============================================
   // MEMOIZED VALUES
@@ -218,19 +323,14 @@ export const VehicleDetails: React.FC = () => {
   const pageTitle = useMemo(() => {
     if (loading) return "Loading... | 4A Rentals";
     if (error || !vehicle) return "Vehicle Not Available | 4A Rentals";
-    return `${vehicle.name} - ${vehicle.specifications.brand} ${vehicle.specifications.model} | 4A Rentals`;
+    return `${vehicle.name} | 4A Rentals`;
   }, [loading, error, vehicle]);
 
-  const pageDescription = useMemo(() => {
-    if (!vehicle) return "Vehicle details";
-    return `Rent the ${vehicle.specifications.year} ${vehicle.specifications.brand} ${vehicle.specifications.model}. ${vehicle.specifications.seats} seats, ${vehicle.specifications.transmission} transmission, ${vehicle.specifications.fuelType} fuel. Starting at $${vehicle.price}/month.`;
-  }, [vehicle]);
-
-  // Memoized print data
-  const vehiclePrintData = useMemo(() => {
-    if (!vehicle) return null;
-    return mapToVehiclePrintData(vehicle);
-  }, [vehicle]);
+  const displayRating = useMemo(() => {
+    if (stats?.averageRating) return stats.averageRating;
+    if (vehicle?.averageRating) return vehicle.averageRating;
+    return null;
+  }, [stats, vehicle]);
 
   // ============================================
   // HANDLERS
@@ -276,89 +376,63 @@ export const VehicleDetails: React.FC = () => {
     setCurrentImageIndex(index);
   }, []);
 
+  const handlePickupDateChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const newPickupDate = e.target.value;
+      setPickupDate(newPickupDate);
+
+      // Auto-set return date if not set or if it's before pickup
+      if (!returnDate || newPickupDate >= returnDate) {
+        setReturnDate(getDefaultReturnDate(newPickupDate));
+      }
+    },
+    [returnDate]
+  );
+
+  const handleReturnDateChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setReturnDate(e.target.value);
+    },
+    []
+  );
+
   // ============================================
   // DATA FETCHING
   // ============================================
   useEffect(() => {
-    // Create a unique ID for this effect instance
-    const effectId = Math.random().toString(36).slice(2, 8);
-    console.log(`🔵 [VehicleDetails] useEffect START (id: ${effectId})`);
-    console.log(`🔵 [VehicleDetails] Current id param: ${id}`);
-
-    // Track if this effect instance is still active
     let cancelled = false;
 
     if (!id) {
-      console.log(`🔵 [VehicleDetails] No ID provided, setting error`);
       setError("Vehicle ID not provided");
       setLoading(false);
       return;
     }
 
     const fetchVehicle = async () => {
-      console.log(
-        `🟡 [VehicleDetails] fetchVehicle START (effectId: ${effectId})`
-      );
-
       try {
         setLoading(true);
         setError(null);
 
-        console.log(
-          `🟡 [VehicleDetails] Calling vehicleService.getVehicle("${id}")...`
-        );
-        const startTime = Date.now();
-
         const vehicleData = await vehicleService.getVehicle(id);
 
-        const endTime = Date.now();
-        console.log(
-          `🟡 [VehicleDetails] vehicleService returned in ${
-            endTime - startTime
-          }ms`
-        );
-        console.log(
-          `🟡 [VehicleDetails] cancelled=${cancelled}, vehicleData=${!!vehicleData}`
-        );
-
-        // Check if this effect was cancelled while we were fetching
-        if (cancelled) {
-          console.log(
-            `🟠 [VehicleDetails] Effect was CANCELLED, ignoring result`
-          );
-          return;
-        }
+        if (cancelled) return;
 
         if (vehicleData) {
           if (vehicleData.status !== "available") {
-            console.log(
-              `🟡 [VehicleDetails] Vehicle not available, status: ${vehicleData.status}`
-            );
             setError("This vehicle is not currently available for booking");
             setVehicle(null);
           } else {
-            console.log(
-              `🟢 [VehicleDetails] SUCCESS! Setting vehicle: ${vehicleData.name}`
-            );
             setVehicle(vehicleData);
           }
         } else {
-          console.log(`🔴 [VehicleDetails] Vehicle not found`);
           setError("Vehicle not found");
         }
       } catch (err) {
-        if (cancelled) {
-          console.log(
-            `🟠 [VehicleDetails] Effect was CANCELLED during error handling`
-          );
-          return;
-        }
-        console.error(`🔴 [VehicleDetails] Fetch ERROR:`, err);
+        if (cancelled) return;
         logError("Failed to fetch vehicle", err);
         setError("Failed to load vehicle details");
       } finally {
         if (!cancelled) {
-          console.log(`🟡 [VehicleDetails] Setting loading=false`);
           setLoading(false);
         }
       }
@@ -366,36 +440,25 @@ export const VehicleDetails: React.FC = () => {
 
     fetchVehicle();
 
-    // Cleanup function
     return () => {
-      console.log(`🧹 [VehicleDetails] useEffect CLEANUP (id: ${effectId})`);
       cancelled = true;
     };
   }, [id]);
-
-  // DEBUG: Log current state
-  console.log("🚗 [VehicleDetails] Current state:", {
-    loading,
-    error,
-    hasVehicle: !!vehicle,
-  });
 
   // ============================================
   // RENDER - LOADING STATE
   // ============================================
   if (loading) {
-    console.log("🚗 [VehicleDetails] Rendering LOADING state");
     return (
       <div className="min-h-screen bg-bg-100 flex items-center justify-center">
         <Helmet>
           <title>{pageTitle}</title>
-          <meta name="robots" content="noindex" />
         </Helmet>
-        <div className="text-center" role="status" aria-live="polite">
-          <div className="flex justify-center mb-4">
-            <Loader />
-          </div>
-          <p className="font-body text-text-200">Loading vehicle details...</p>
+        <div className="text-center">
+          <Loader />
+          <p className="mt-4 font-body text-text-200">
+            Loading vehicle details...
+          </p>
         </div>
       </div>
     );
@@ -405,20 +468,16 @@ export const VehicleDetails: React.FC = () => {
   // RENDER - ERROR STATE
   // ============================================
   if (error || !vehicle) {
-    console.log("🚗 [VehicleDetails] Rendering ERROR state:", error);
     return (
       <div className="min-h-screen bg-bg-100 flex items-center justify-center">
         <Helmet>
           <title>{pageTitle}</title>
-          <meta name="robots" content="noindex" />
         </Helmet>
-        <div className="text-center" role="alert">
+        <div className="text-center">
           <h1 className="font-heading text-3xl text-text-100 mb-4 uppercase">
             Vehicle Not Available
           </h1>
-          <p className="font-body text-text-200 mb-6">
-            {error || "The vehicle you are looking for is not available."}
-          </p>
+          <p className="font-body text-text-200 mb-6">{error}</p>
           <Button onClick={handleGoHome} variant="primary">
             Back to Home
           </Button>
@@ -427,8 +486,6 @@ export const VehicleDetails: React.FC = () => {
     );
   }
 
-  console.log("🚗 [VehicleDetails] Rendering MAIN content for:", vehicle.name);
-
   // ============================================
   // RENDER - MAIN CONTENT
   // ============================================
@@ -436,270 +493,183 @@ export const VehicleDetails: React.FC = () => {
     <div className="min-h-screen bg-bg-100">
       <Helmet>
         <title>{pageTitle}</title>
-        <meta name="description" content={pageDescription} />
-        <link rel="canonical" href={`https://4arentals.com/vehicle/${id}`} />
+        <meta
+          name="description"
+          content={`Rent the ${vehicle.name}. ${vehicle.specifications.seats} seats, ${vehicle.specifications.transmission} transmission.`}
+        />
       </Helmet>
 
       <Navbar onAuthModalOpen={handleAuthModalOpen} />
 
-      <main id="main-content">
-        <div className="pt-32 pb-16">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            {/* Back Button & Print Button */}
-            <nav
-              aria-label="Breadcrumb"
-              className="mb-8 flex items-center justify-between"
-            >
-              <button
-                type="button"
-                onClick={handleGoBack}
-                className="flex items-center gap-2 font-body text-text-200 hover:text-primary-200 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-200 rounded-lg px-2 py-1"
-                aria-label="Go back to previous page"
-              >
-                <ArrowLeft className="w-4 h-4" aria-hidden="true" />
-                <span>Back</span>
-              </button>
+      <main id="main-content" className="pt-24 pb-16">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          {/* Back Button */}
+          <button
+            onClick={handleGoBack}
+            className="flex items-center gap-2 font-body text-text-200 hover:text-primary-200 transition-colors mb-6"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Back
+          </button>
 
-              {/* Print Button */}
-              {vehiclePrintData && (
-                <PrintButton
-                  content={<VehicleDetailsPrint data={vehiclePrintData} />}
-                  title={vehicle.name}
-                  variant="secondary"
-                  size="sm"
-                  label="Print Details"
-                  showPreview={true}
-                />
-              )}
-            </nav>
-
-            {/* Vehicle Image Gallery */}
-            <section aria-label="Vehicle images" className="mb-8">
-              {/* Main Image */}
-              <div className="relative">
-                <img
-                  src={images[currentImageIndex]}
-                  alt={`${vehicle.name} - Image ${currentImageIndex + 1} of ${
-                    images.length
-                  }`}
-                  className="w-full h-96 object-cover rounded-2xl"
-                />
-
-                {/* Navigation Arrows */}
-                {hasMultipleImages && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={handlePreviousImage}
-                      aria-label="Previous image"
-                      className="absolute left-4 top-1/2 -translate-y-1/2 bg-white/90 hover:bg-white p-3 rounded-full shadow-lg transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-200"
-                    >
-                      <ArrowLeft
-                        className="w-5 h-5 text-text-100"
-                        aria-hidden="true"
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleNextImage}
-                      aria-label="Next image"
-                      className="absolute right-4 top-1/2 -translate-y-1/2 bg-white/90 hover:bg-white p-3 rounded-full shadow-lg transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-200"
-                    >
-                      <ArrowRight
-                        className="w-5 h-5 text-text-100"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </>
-                )}
-
-                {/* Image Counter */}
-                {hasMultipleImages && (
-                  <div
-                    className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/60 text-white px-3 py-1 rounded-full text-sm font-body"
-                    aria-live="polite"
-                  >
-                    {currentImageIndex + 1} / {images.length}
-                  </div>
-                )}
-              </div>
-
-              {/* Thumbnail Strip */}
-              {hasMultipleImages && (
-                <div
-                  className="flex gap-3 mt-4 overflow-x-auto pb-2"
-                  role="group"
-                  aria-label="Image thumbnails"
-                >
-                  {images.map((img, index) => (
-                    <button
-                      key={`thumbnail-${index}`}
-                      type="button"
-                      onClick={() => handleThumbnailClick(index)}
-                      aria-label={`View image ${index + 1}`}
-                      aria-pressed={currentImageIndex === index}
-                      className={`flex-shrink-0 w-24 h-20 rounded-lg overflow-hidden border-2 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-200 ${
-                        currentImageIndex === index
-                          ? "border-primary-200 shadow-md"
-                          : "border-bg-200 hover:border-primary-100"
-                      }`}
-                    >
-                      <img
-                        src={img}
-                        alt=""
-                        className="w-full h-full object-cover"
-                      />
-                    </button>
-                  ))}
+          {/* Title & Rating Row */}
+          <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-6">
+            <div>
+              <h1 className="font-heading text-3xl lg:text-4xl text-text-100 uppercase tracking-wide">
+                {vehicle.name}
+              </h1>
+              {displayRating && (
+                <div className="mt-2">
+                  <StarRating
+                    rating={displayRating}
+                    totalReviews={stats?.totalReviews || vehicle.reviewCount}
+                  />
                 </div>
               )}
-            </section>
+            </div>
+            <span className="inline-block px-3 py-1 bg-primary-100 text-text-100 text-sm font-medium rounded-full uppercase">
+              {vehicle.category}
+            </span>
+          </div>
 
-            <div className="grid lg:grid-cols-3 gap-12">
-              {/* Main Content */}
-              <div className="lg:col-span-2">
-                {/* Title and Price */}
-                <header className="flex flex-col sm:flex-row justify-between items-start gap-4 mb-8">
-                  <div>
-                    <h1 className="font-heading text-4xl text-text-100 mb-2 uppercase tracking-wide">
-                      {vehicle.name}
-                    </h1>
-                    <p className="font-body text-xl text-text-200 capitalize">
-                      {vehicle.category} Vehicle
-                    </p>
-                    <div className="mt-2">
-                      <StarRating rating={RATING} />
-                    </div>
+          <div className="grid lg:grid-cols-3 gap-8">
+            {/* Left Column - Images & Details */}
+            <div className="lg:col-span-2 space-y-8">
+              {/* Image Gallery */}
+              <section aria-label="Vehicle images">
+                <div className="relative rounded-2xl overflow-hidden bg-bg-200">
+                  <img
+                    src={images[currentImageIndex]}
+                    alt={`${vehicle.name} - Image ${currentImageIndex + 1}`}
+                    className="w-full h-80 lg:h-96 object-cover"
+                  />
+
+                  {hasMultipleImages && (
+                    <>
+                      <button
+                        onClick={handlePreviousImage}
+                        className="absolute left-4 top-1/2 -translate-y-1/2 bg-white/90 hover:bg-white p-2 rounded-full shadow-lg"
+                        aria-label="Previous image"
+                      >
+                        <ArrowLeft className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={handleNextImage}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 bg-white/90 hover:bg-white p-2 rounded-full shadow-lg"
+                        aria-label="Next image"
+                      >
+                        <ArrowRight className="w-5 h-5" />
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {/* Thumbnails */}
+                {hasMultipleImages && (
+                  <div className="flex gap-3 mt-4 overflow-x-auto pb-2">
+                    {images.map((img, index) => (
+                      <button
+                        key={index}
+                        onClick={() => handleThumbnailClick(index)}
+                        className={`flex-shrink-0 w-20 h-16 rounded-lg overflow-hidden border-2 transition-all ${
+                          currentImageIndex === index
+                            ? "border-primary-200"
+                            : "border-bg-200 hover:border-primary-100"
+                        }`}
+                      >
+                        <img
+                          src={img}
+                          alt=""
+                          className="w-full h-full object-cover"
+                        />
+                      </button>
+                    ))}
                   </div>
-                  <div className="text-left sm:text-right">
-                    <p className="font-heading text-4xl font-bold text-text-100">
-                      <span className="sr-only">Price: </span>${vehicle.price}
-                    </p>
-                    <p className="font-body text-text-200">/month</p>
-                  </div>
-                </header>
+                )}
+              </section>
 
-                {/* Specifications Grid */}
-                <section aria-labelledby="specs-heading" className="mb-8">
-                  <h2 id="specs-heading" className="sr-only">
-                    Vehicle Specifications
-                  </h2>
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                    <SpecCard
-                      icon={<Users className="w-8 h-8 text-blue-600" />}
-                      label="Seats"
-                      value={vehicle.specifications.seats}
-                    />
-                    <SpecCard
-                      icon={<Settings className="w-8 h-8 text-green-600" />}
-                      label="Transmission"
-                      value={vehicle.specifications.transmission}
-                    />
-                    <SpecCard
-                      icon={<Fuel className="w-8 h-8 text-purple-600" />}
-                      label="Fuel Type"
-                      value={vehicle.specifications.fuelType}
-                    />
-                    <SpecCard
-                      icon={<Calendar className="w-8 h-8 text-orange-600" />}
-                      label="Year"
-                      value={vehicle.specifications.year}
-                    />
-                    {vehicle.specifications.color && (
-                      <SpecCard
-                        icon={
-                          <div className="w-8 h-8 bg-bg-300 rounded-full" />
-                        }
-                        label="Color"
-                        value={vehicle.specifications.color}
-                      />
-                    )}
-                    {vehicle.specifications.cylinders && (
-                      <SpecCard
-                        icon={<Settings className="w-8 h-8 text-red-600" />}
-                        label="Cylinders"
-                        value={vehicle.specifications.cylinders}
-                      />
-                    )}
-                  </div>
-                </section>
+              {/* Quick Specs Bar */}
+              <section aria-label="Quick specifications">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <SpecBadge
+                    icon={<Fuel className="w-6 h-6" />}
+                    label="Fuel Type"
+                    value={vehicle.specifications.fuelType}
+                  />
+                  <SpecBadge
+                    icon={<Settings className="w-6 h-6" />}
+                    label="Transmission"
+                    value={vehicle.specifications.transmission}
+                  />
+                  <SpecBadge
+                    icon={<Users className="w-6 h-6" />}
+                    label="Capacity"
+                    value={`${vehicle.specifications.seats} Passengers`}
+                  />
+                  <SpecBadge
+                    icon={<Calendar className="w-6 h-6" />}
+                    label="Year"
+                    value={String(vehicle.specifications.year)}
+                  />
+                </div>
+              </section>
 
-                {/* Vehicle Information */}
-                <Card variant="default" padding="lg" className="mb-8">
-                  <h2 className="font-heading text-2xl text-text-100 mb-6 uppercase tracking-wide">
-                    Vehicle Information
-                  </h2>
-                  <dl className="grid md:grid-cols-2 lg:grid-cols-3 gap-6 font-body text-sm">
-                    <InfoItem
-                      label="Brand & Model"
-                      value={`${vehicle.specifications.brand} ${vehicle.specifications.model}`}
-                    />
-                    <InfoItem
-                      label="Color"
-                      value={vehicle.specifications.color}
-                    />
-                    <InfoItem
-                      label="Interior"
-                      value={vehicle.specifications.interior}
-                    />
-                    <InfoItem
-                      label="Interior Color"
-                      value={vehicle.specifications.interiorColor}
-                    />
-                    <InfoItem
-                      label="Drive Train"
-                      value={vehicle.specifications.driveTrain}
-                    />
-                    <InfoItem
-                      label="Transmission"
-                      value={vehicle.specifications.transmission}
-                    />
-                    <InfoItem
-                      label="Cylinders"
-                      value={vehicle.specifications.cylinders}
-                    />
-                    <InfoItem
-                      label="VIN"
-                      value={vehicle.specifications.vin}
-                      mono
-                    />
-                    <InfoItem
-                      label="Engine"
-                      value={vehicle.specifications.engine}
-                    />
-                    {vehicle.specifications.mileage && (
-                      <InfoItem
-                        label="Mileage"
-                        value={`${vehicle.specifications.mileage.toLocaleString()} miles`}
-                      />
-                    )}
-                    <InfoItem
-                      label="Stock #"
-                      value={vehicle.specifications.stockNumber}
-                    />
-                    <InfoItem
-                      label="Fuel Economy"
-                      value={vehicle.specifications.fuelEconomy}
-                      subtext="Estimated By E.P.A. - Actual Mileage May Vary"
-                    />
-                  </dl>
-                </Card>
+              {/* Specifications */}
+              <Card variant="default" padding="lg">
+                <h2 className="font-heading text-xl text-text-100 uppercase tracking-wide mb-6">
+                  Specifications
+                </h2>
+                <dl className="grid grid-cols-2 md:grid-cols-3 gap-6">
+                  <InfoItem
+                    label="Brand & Model"
+                    value={`${vehicle.specifications.brand} ${vehicle.specifications.model}`}
+                  />
+                  <InfoItem
+                    label="Color"
+                    value={vehicle.specifications.color}
+                  />
+                  <InfoItem
+                    label="Interior"
+                    value={vehicle.specifications.interior}
+                  />
+                  <InfoItem
+                    label="Interior Color"
+                    value={vehicle.specifications.interiorColor}
+                  />
+                  <InfoItem
+                    label="Drive Train"
+                    value={vehicle.specifications.driveTrain}
+                  />
+                  <InfoItem
+                    label="Cylinders"
+                    value={vehicle.specifications.cylinders}
+                  />
+                  <InfoItem
+                    label="Engine"
+                    value={vehicle.specifications.engine}
+                  />
+                  <InfoItem
+                    label="Fuel Economy"
+                    value={vehicle.specifications.fuelEconomy}
+                  />
+                  <InfoItem
+                    label="VIN"
+                    value={vehicle.specifications.vin}
+                    mono
+                  />
+                </dl>
+              </Card>
 
-                {/* Features */}
+              {/* Features & Amenities */}
+              {vehicle.features.length > 0 && (
                 <Card variant="default" padding="lg">
-                  <h2 className="font-heading text-2xl text-text-100 mb-6 uppercase tracking-wide">
+                  <h2 className="font-heading text-xl text-text-100 uppercase tracking-wide mb-6">
                     Features & Amenities
                   </h2>
-                  <ul className="grid md:grid-cols-2 gap-4" role="list">
+                  <ul className="grid md:grid-cols-2 gap-3">
                     {vehicle.features.map((feature, index) => (
-                      <li
-                        key={`feature-${index}`}
-                        className="flex items-center gap-3"
-                      >
-                        <CheckCircle
-                          className="w-5 h-5 text-green-500 flex-shrink-0"
-                          aria-hidden="true"
-                        />
+                      <li key={index} className="flex items-center gap-3">
+                        <CheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
                         <span className="font-body text-text-100">
                           {feature}
                         </span>
@@ -707,19 +677,161 @@ export const VehicleDetails: React.FC = () => {
                     ))}
                   </ul>
                 </Card>
-              </div>
+              )}
 
-              {/* Sidebar */}
-              <aside className="lg:col-span-1" aria-label="Booking">
-                <Card variant="default" padding="lg" className="sticky top-32">
-                  <div className="text-center mb-6">
-                    <p className="font-heading text-4xl font-bold text-text-100 mb-2">
-                      <span className="sr-only">Price: </span>${vehicle.price}
-                    </p>
-                    <p className="font-body text-text-200">/month</p>
-                    <div className="flex justify-center mt-3">
-                      <StarRating rating={RATING} size="sm" />
+              {/* Customer Reviews - Only show if reviews exist */}
+              {hasReviews && (
+                <Card variant="default" padding="lg">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="font-heading text-xl text-text-100 uppercase tracking-wide">
+                      Customer Reviews
+                    </h2>
+                    {stats && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-2xl font-bold text-text-100">
+                          {stats.averageRating?.toFixed(1)}
+                        </span>
+                        <div>
+                          <StarRating
+                            rating={stats.averageRating || 0}
+                            size="sm"
+                            showRating={false}
+                          />
+                          <p className="text-xs text-text-200">
+                            {stats.totalReviews} review
+                            {stats.totalReviews !== 1 ? "s" : ""}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-4">
+                    {reviews.map((review) => (
+                      <ReviewCard key={review.id} review={review} />
+                    ))}
+                  </div>
+                </Card>
+              )}
+            </div>
+
+            {/* Right Column - Pricing & Booking */}
+            <div className="lg:col-span-1">
+              <div className="sticky top-28 space-y-6">
+                {/* Pricing Tiers */}
+                <Card variant="default" padding="lg">
+                  <h3 className="font-heading text-lg text-text-100 uppercase tracking-wide mb-4">
+                    Pricing Tiers
+                  </h3>
+
+                  {ratesLoading ? (
+                    <div className="flex justify-center py-8">
+                      <Loader />
                     </div>
+                  ) : rates ? (
+                    <div className="space-y-3">
+                      <PricingTier
+                        label="Weekly"
+                        rate={rates.weeklyRate}
+                        period="7 Days"
+                        perDay={rates.weeklyRate / 7}
+                      />
+                      <PricingTier
+                        label="Monthly"
+                        rate={rates.monthlyRate}
+                        period="30 Days"
+                        perDay={rates.monthlyRate / 30}
+                        badge="SAVE 18%"
+                        badgeColor="green"
+                      />
+                      <PricingTier
+                        label="Semester"
+                        rate={rates.semesterRate}
+                        period="4 Months"
+                        perDay={rates.semesterRate / 120}
+                        badge="STUDENT EXCLUSIVE"
+                        badgeColor="blue"
+                      />
+                    </div>
+                  ) : null}
+                </Card>
+
+                {/* Price Calculator */}
+                <Card variant="default" padding="lg">
+                  <h3 className="font-heading text-lg text-text-100 uppercase tracking-wide mb-4">
+                    Calculate Your Price
+                  </h3>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-text-200 mb-2">
+                        Pick-up Date
+                      </label>
+                      <input
+                        type="date"
+                        value={pickupDate}
+                        onChange={handlePickupDateChange}
+                        min={getMinDate()}
+                        className="w-full px-4 py-3 border border-bg-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-text-200 mb-2">
+                        Drop-off Date
+                      </label>
+                      <input
+                        type="date"
+                        value={returnDate}
+                        onChange={handleReturnDateChange}
+                        min={pickupDate || getMinDate()}
+                        className="w-full px-4 py-3 border border-bg-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200"
+                      />
+                    </div>
+
+                    {/* Price Result */}
+                    {pickupDate && returnDate && (
+                      <div className="pt-4 border-t border-bg-200">
+                        {pricingLoading ? (
+                          <div className="flex items-center justify-center py-4">
+                            <Loader />
+                            <span className="ml-2 text-sm text-text-200">
+                              Calculating...
+                            </span>
+                          </div>
+                        ) : pricingError ? (
+                          <p className="text-sm text-red-600">{pricingError}</p>
+                        ) : pricing ? (
+                          <div className="space-y-2">
+                            <div className="flex justify-between text-sm">
+                              <span className="text-text-200">
+                                {pricing.rentalDays} days (
+                                {pricing.pricingMethod})
+                              </span>
+                              <span className="text-text-100">
+                                {formatCurrency(pricing.rentalAmount)}
+                              </span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-text-200">
+                                Security Deposit
+                              </span>
+                              <span className="text-text-100">
+                                {formatCurrency(pricing.securityDeposit)}
+                              </span>
+                            </div>
+                            <div className="flex justify-between font-bold pt-2 border-t border-bg-200">
+                              <span className="text-text-100">
+                                Estimated Total
+                              </span>
+                              <span className="text-primary-300 text-xl">
+                                {formatCurrency(pricing.totalDueNow)}
+                              </span>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
 
                   <Button
@@ -727,60 +839,44 @@ export const VehicleDetails: React.FC = () => {
                     variant="primary"
                     fullWidth
                     size="lg"
-                    className="mb-4"
+                    className="mt-6"
                   >
-                    {currentUser ? "Book This Vehicle" : "Sign In to Book"}
+                    {currentUser ? "Book Now" : "Sign In to Book"}
                   </Button>
 
-                  {/* Print Button in Sidebar */}
-                  {vehiclePrintData && (
-                    <PrintButton
-                      content={<VehicleDetailsPrint data={vehiclePrintData} />}
-                      title={vehicle.name}
-                      variant="secondary"
-                      size="md"
-                      label="Print Vehicle Details"
-                      showPreview={true}
-                      className="w-full mb-6"
-                    />
-                  )}
-
-                  <div className="border-t border-bg-200 pt-6">
-                    <h3 className="font-heading text-sm uppercase tracking-wide text-text-100 mb-4">
-                      Need Help?
-                    </h3>
-                    <address className="not-italic space-y-3">
-                      <a
-                        href={CONTACT_INFO.phoneHref}
-                        className="flex items-center gap-3 font-body text-sm text-text-200 hover:text-primary-200 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-200 rounded"
-                      >
-                        <Phone
-                          className="w-4 h-4 flex-shrink-0"
-                          aria-hidden="true"
-                        />
-                        <span>{CONTACT_INFO.phone}</span>
-                      </a>
-                      <a
-                        href={`mailto:${CONTACT_INFO.email}`}
-                        className="flex items-center gap-3 font-body text-sm text-text-200 hover:text-primary-200 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-200 rounded"
-                      >
-                        <Mail
-                          className="w-4 h-4 flex-shrink-0"
-                          aria-hidden="true"
-                        />
-                        <span>{CONTACT_INFO.email}</span>
-                      </a>
-                      <p className="flex items-center gap-3 font-body text-sm text-text-200">
-                        <MapPin
-                          className="w-4 h-4 flex-shrink-0"
-                          aria-hidden="true"
-                        />
-                        <span>{CONTACT_INFO.location}</span>
-                      </p>
-                    </address>
-                  </div>
+                  <p className="text-center text-xs text-text-200 mt-3 flex items-center justify-center gap-1">
+                    <Shield className="w-4 h-4" />
+                    Secure Booking Transaction
+                  </p>
                 </Card>
-              </aside>
+
+                {/* Contact Info */}
+                <Card variant="default" padding="lg">
+                  <h3 className="font-heading text-sm uppercase tracking-wide text-text-100 mb-4">
+                    Need Help?
+                  </h3>
+                  <address className="not-italic space-y-3">
+                    <a
+                      href={CONTACT_INFO.phoneHref}
+                      className="flex items-center gap-3 text-sm text-text-200 hover:text-primary-200"
+                    >
+                      <Phone className="w-4 h-4" />
+                      {CONTACT_INFO.phone}
+                    </a>
+                    <a
+                      href={`mailto:${CONTACT_INFO.email}`}
+                      className="flex items-center gap-3 text-sm text-text-200 hover:text-primary-200"
+                    >
+                      <Mail className="w-4 h-4" />
+                      {CONTACT_INFO.email}
+                    </a>
+                    <p className="flex items-center gap-3 text-sm text-text-200">
+                      <MapPin className="w-4 h-4" />
+                      {CONTACT_INFO.location}
+                    </p>
+                  </address>
+                </Card>
+              </div>
             </div>
           </div>
         </div>

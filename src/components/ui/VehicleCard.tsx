@@ -7,11 +7,17 @@ import { Button } from "@/components/ui/Button";
 // ============================================
 // TYPES
 // ============================================
+type PriceUnit = "day" | "week" | "month" | "semester";
+
 interface VehicleCardProps {
   vehicle: Vehicle;
   onCardClick: () => void;
   onBookClick: (e: React.MouseEvent) => void;
   isAuthenticated: boolean;
+  /** Optional custom price to display (overrides vehicle.price) */
+  displayPrice?: number;
+  /** Optional price unit label (overrides default "/mo") */
+  priceUnit?: PriceUnit;
 }
 
 interface SpecItemProps {
@@ -29,8 +35,15 @@ interface FeatureItemProps {
 const MAX_VISIBLE_FEATURES = 3;
 const STAR_RATING = 5;
 
+const PRICE_UNIT_LABELS: Record<PriceUnit, string> = {
+  day: "/day",
+  week: "/wk",
+  month: "/mo",
+  semester: "/sem",
+};
+
 // ============================================
-// SUB-COMPONENTS (same names)
+// SUB-COMPONENTS
 // ============================================
 const SpecItem: React.FC<SpecItemProps> = ({ icon, label }) => (
   <div className="spec" role="listitem">
@@ -61,14 +74,24 @@ const StarRating: React.FC<{ rating: number }> = ({ rating }) => (
 );
 
 // ============================================
-// MAIN COMPONENT (same name)
+// MAIN COMPONENT
 // ============================================
 export const VehicleCard: React.FC<VehicleCardProps> = ({
   vehicle,
   onCardClick,
   onBookClick,
   isAuthenticated,
+  displayPrice,
+  priceUnit = "month",
 }) => {
+  // Use displayPrice if provided, otherwise fall back to vehicle.price
+  const price = useMemo(
+    () => displayPrice ?? vehicle.price,
+    [displayPrice, vehicle.price]
+  );
+
+  const priceLabel = useMemo(() => PRICE_UNIT_LABELS[priceUnit], [priceUnit]);
+
   const imageUrl = useMemo(
     () => (Array.isArray(vehicle.image) ? vehicle.image[0] : vehicle.image),
     [vehicle.image]
@@ -115,12 +138,11 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
   );
 
   const cardAriaLabel = useMemo(
-    () =>
-      `${vehicle.name}, $${vehicle.price} per month. Click to view details.`,
-    [vehicle.name, vehicle.price]
+    () => `${vehicle.name}, $${price} ${priceLabel}. Click to view details.`,
+    [vehicle.name, price, priceLabel]
   );
 
-  // handlers (same names)
+  // Handlers
   const handleCardClick = useCallback(() => onCardClick(), [onCardClick]);
 
   const handleKeyDown = useCallback(
@@ -179,12 +201,12 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
           </div>
 
           <div className="bottomRow">
-            <div className="price" aria-label={`$${vehicle.price} per month`}>
+            <div className="price" aria-label={`$${price} ${priceLabel}`}>
               <span className="dollar" aria-hidden="true">
                 $
               </span>
-              <span className="amount">{vehicle.price}</span>
-              <span className="per">/mo</span>
+              <span className="amount">{price}</span>
+              <span className="per">{priceLabel}</span>
             </div>
 
             <Button

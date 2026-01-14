@@ -22,15 +22,24 @@ const limitSchema = z.number().min(1).max(50);
  * Single source of truth for data transformation
  */
 function mapVehicleFromDB(vehicle: Record<string, unknown>): Vehicle {
+  // Handle image field - can be string or array
+  const rawImage = vehicle.image;
+  let image: string | string[];
+  if (Array.isArray(rawImage)) {
+    image = rawImage.length > 0 ? rawImage : "";
+  } else {
+    image = (rawImage as string) || "";
+  }
+
   return {
     id: vehicle.id as string,
     name: vehicle.name as string,
-    category: vehicle.category as string as "economy" | "suv" | "luxury",
-    price: vehicle.price as number,
+    category: vehicle.category as "sedan" | "suv" | "electric" | "hybrid",
+    price: Number(vehicle.price) || 0,
     priceUnit: "month" as const,
-    image: (vehicle.image as string) || "",
+    image,
     features: (vehicle.features as string[]) || [],
-    status: vehicle.status as string as
+    status: vehicle.status as
       | "available"
       | "rented"
       | "maintenance"
@@ -58,13 +67,28 @@ function mapVehicleFromDB(vehicle: Record<string, unknown>): Vehicle {
     },
     description: vehicle.description as string | undefined,
     location: vehicle.location as string | undefined,
-    // Convert null to undefined for these fields
+
+    // Pricing fields
+    dailyRate: Number(vehicle.daily_rate) || 0,
+    weeklyRate: Number(vehicle.weekly_rate) || 0,
+    monthlyRate: Number(vehicle.monthly_rate) || 0,
+    semesterRate: Number(vehicle.semester_rate) || 0,
+
+    // Rating fields (cached from reviews)
+    averageRating: vehicle.average_rating
+      ? Number(vehicle.average_rating)
+      : null,
+    reviewCount: Number(vehicle.review_count) || 0,
+
+    // Optional fields - convert null to undefined
     stockNumber: (vehicle.stock_number as string | null) ?? undefined,
     licensePlate: (vehicle.license_plate as string | null) ?? undefined,
     vin: (vehicle.vin as string | null) ?? undefined,
     currentMileage: (vehicle.current_mileage as number | null) ?? undefined,
     lastServiceDate: (vehicle.last_service_date as string | null) ?? undefined,
     notes: (vehicle.notes as string | null) ?? undefined,
+
+    // Timestamps
     createdAt: new Date(vehicle.created_at as string),
     updatedAt: new Date(vehicle.updated_at as string),
   };
@@ -98,6 +122,7 @@ function createUserError(context: string): Error {
     searchVehicles: "Search failed. Please try again.",
     getFeaturedVehicles: "Unable to load featured vehicles.",
     isVehicleAvailable: "Unable to check vehicle availability.",
+    getCategoryPricing: "Unable to load pricing information.",
   };
   return new Error(messages[context] || "An unexpected error occurred.");
 }
@@ -145,7 +170,6 @@ export const vehicleService = {
 
       return (data || []).map(mapVehicleFromDB);
     } catch (error) {
-      // Re-throw rate limit and user-friendly errors
       if (isRateLimitError(error) || isUserError(error)) {
         throw error;
       }
@@ -161,7 +185,6 @@ export const vehicleService = {
    */
   async getVehiclesByCategory(category: string): Promise<Vehicle[]> {
     try {
-      // Validate and sanitize input
       const sanitizedCategory = categorySchema.parse(category);
 
       const { data, error } = await supabase
@@ -178,12 +201,10 @@ export const vehicleService = {
 
       return (data || []).map(mapVehicleFromDB);
     } catch (error) {
-      // Handle validation errors - return empty array
       if (error instanceof z.ZodError) {
         logError("getVehiclesByCategory - invalid category", error);
         return [];
       }
-      // Re-throw rate limit and user-friendly errors
       if (isRateLimitError(error) || isUserError(error)) {
         throw error;
       }
@@ -199,7 +220,6 @@ export const vehicleService = {
    */
   async getVehicle(id: string): Promise<Vehicle | null> {
     try {
-      // Validate UUID format
       const validatedId = uuidSchema.parse(id);
 
       const { data, error } = await supabase
@@ -209,7 +229,6 @@ export const vehicleService = {
         .single();
 
       if (error) {
-        // PGRST116 = No rows returned (not found)
         if (error.code === "PGRST116") {
           return null;
         }
@@ -219,12 +238,10 @@ export const vehicleService = {
 
       return data ? mapVehicleFromDB(data) : null;
     } catch (error) {
-      // Handle validation errors - return null for invalid ID
       if (error instanceof z.ZodError) {
         logError("getVehicle - invalid ID format", error);
         return null;
       }
-      // Re-throw rate limit and user-friendly errors
       if (isRateLimitError(error) || isUserError(error)) {
         throw error;
       }
@@ -250,7 +267,6 @@ export const vehicleService = {
         throw createUserError("getCategories");
       }
 
-      // Extract unique categories and sort alphabetically
       const categories = [
         ...new Set(
           (data || []).map((v) => v.category as string).filter(Boolean)
@@ -259,7 +275,6 @@ export const vehicleService = {
 
       return categories;
     } catch (error) {
-      // Re-throw rate limit and user-friendly errors
       if (isRateLimitError(error) || isUserError(error)) {
         throw error;
       }
@@ -269,16 +284,13 @@ export const vehicleService = {
   },
 
   /**
-   * Search vehicles by name or category
+   * Search vehicles by name, brand, or model
    * Public access - no authentication required
    * Rate limit: 30 requests per minute
    */
   async searchVehicles(query: string): Promise<Vehicle[]> {
     try {
-      // Validate and sanitize search query
       const sanitizedQuery = searchQuerySchema.parse(query);
-
-      // Escape special characters for ILIKE pattern
       const escapedQuery = sanitizedQuery.replace(/[%_]/g, "\\$&");
 
       const { data, error } = await supabase
@@ -296,11 +308,9 @@ export const vehicleService = {
 
       return (data || []).map(mapVehicleFromDB);
     } catch (error) {
-      // Handle validation errors - return empty results
       if (error instanceof z.ZodError) {
         return [];
       }
-      // Re-throw rate limit and user-friendly errors
       if (isRateLimitError(error) || isUserError(error)) {
         throw error;
       }
@@ -316,7 +326,6 @@ export const vehicleService = {
    */
   async getFeaturedVehicles(limit: number = 6): Promise<Vehicle[]> {
     try {
-      // Validate limit
       const validatedLimit = limitSchema.parse(limit);
 
       const { data, error } = await supabase
@@ -333,12 +342,10 @@ export const vehicleService = {
 
       return (data || []).map(mapVehicleFromDB);
     } catch (error) {
-      // Handle validation errors - use default limit
       if (error instanceof z.ZodError) {
         logError("getFeaturedVehicles - invalid limit, using default", error);
         return this.getFeaturedVehicles(6);
       }
-      // Re-throw rate limit and user-friendly errors
       if (isRateLimitError(error) || isUserError(error)) {
         throw error;
       }
@@ -354,7 +361,6 @@ export const vehicleService = {
    */
   async isVehicleAvailable(id: string): Promise<boolean> {
     try {
-      // Validate UUID format
       const validatedId = uuidSchema.parse(id);
 
       const { data, error } = await supabase
@@ -364,7 +370,6 @@ export const vehicleService = {
         .single();
 
       if (error) {
-        // Vehicle not found
         if (error.code === "PGRST116") {
           return false;
         }
@@ -374,11 +379,9 @@ export const vehicleService = {
 
       return data?.status === "available";
     } catch (error) {
-      // Handle validation errors - return false for invalid ID
       if (error instanceof z.ZodError) {
         return false;
       }
-      // For rate limit errors, re-throw so UI can show message
       if (isRateLimitError(error)) {
         throw error;
       }
@@ -397,7 +400,6 @@ export const vehicleService = {
     maxPrice: number
   ): Promise<Vehicle[]> {
     try {
-      // Validate price range
       const validatedMin = z.number().min(0).parse(minPrice);
       const validatedMax = z.number().min(0).parse(maxPrice);
 
@@ -420,11 +422,9 @@ export const vehicleService = {
 
       return (data || []).map(mapVehicleFromDB);
     } catch (error) {
-      // Handle validation errors - return empty array
       if (error instanceof z.ZodError) {
         return [];
       }
-      // Re-throw rate limit and user-friendly errors
       if (isRateLimitError(error) || isUserError(error)) {
         throw error;
       }
@@ -450,7 +450,6 @@ export const vehicleService = {
         throw createUserError("getCategories");
       }
 
-      // Count vehicles per category
       const counts: Record<string, number> = {};
       (data || []).forEach((vehicle) => {
         const category = vehicle.category as string;
@@ -461,12 +460,53 @@ export const vehicleService = {
 
       return counts;
     } catch (error) {
-      // Re-throw rate limit and user-friendly errors
       if (isRateLimitError(error) || isUserError(error)) {
         throw error;
       }
       logError("getCategoryCounts", error);
       throw createUserError("getCategories");
+    }
+  },
+
+  /**
+   * Get minimum monthly pricing for each category
+   * Returns monthly starting prices per category
+   * Includes available, rented, and reserved vehicles for accurate pricing display
+   * Public access - no authentication required
+   */
+  async getCategoryPricing(): Promise<Record<string, number>> {
+    try {
+      const { data, error } = await supabase
+        .from("vehicles")
+        .select("category, price, monthly_rate")
+        .in("status", ["available", "rented", "reserved"]);
+
+      if (error) {
+        logError("getCategoryPricing", error);
+        throw createUserError("getCategoryPricing");
+      }
+
+      const pricing: Record<string, number> = {};
+
+      (data || []).forEach((vehicle) => {
+        const category = vehicle.category as string;
+        const monthlyPrice =
+          Number(vehicle.monthly_rate) || Number(vehicle.price) || 0;
+
+        if (!category || monthlyPrice === 0) return;
+
+        if (!pricing[category] || monthlyPrice < pricing[category]) {
+          pricing[category] = monthlyPrice;
+        }
+      });
+
+      return pricing;
+    } catch (error) {
+      if (isRateLimitError(error) || isUserError(error)) {
+        throw error;
+      }
+      logError("getCategoryPricing", error);
+      throw createUserError("getCategoryPricing");
     }
   },
 };

@@ -13,9 +13,9 @@ import { Footer } from "@/components/layout/Footer";
 import { SectionSkeleton } from "@/components/ui/SectionSkeleton";
 
 // Lazy load below-the-fold components (Dynamic Import Pattern)
-const VehicleGrid = lazy(() =>
-  import("@/components/features/vehicles/VehicleGrid").then((module) => ({
-    default: module.VehicleGrid,
+const BrowseByCategory = lazy(() =>
+  import("@/components/features/browse/BrowseByCategory").then((module) => ({
+    default: module.BrowseByCategory,
   }))
 );
 
@@ -167,11 +167,13 @@ const Home: React.FC = () => {
             <Hero />
           </Sentry.ErrorBoundary>
 
-          {/* Vehicle Grid - Important but can load after hero */}
-          <SentryBoundary sectionName="vehicle grid" fallbackHeight="600px">
-            <VehicleGrid onAuthModalOpen={handleAuthModalOpen} />
+          {/* Browse by Category */}
+          <SentryBoundary
+            sectionName="browse categories"
+            fallbackHeight="400px"
+          >
+            <BrowseByCategory />
           </SentryBoundary>
-
           {/* Below-the-fold sections - lazy loaded with error boundaries */}
           <SentryBoundary sectionName="features section" fallbackHeight="400px">
             <WhyRentWithUs />

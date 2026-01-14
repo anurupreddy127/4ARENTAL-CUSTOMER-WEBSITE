@@ -158,7 +158,19 @@ export const ExtendRentalModal: React.FC<ExtendRentalModalProps> = ({
 
     try {
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+      // Import supabase client to get the user's access token
+      const { supabase } = await import("@/config/supabase");
+
+      // Get user's session token (NOT the anon key)
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError || !session?.access_token) {
+        throw new Error("Please log in to extend your rental");
+      }
 
       const newReturnDateTime = `${newReturnDate}T${
         booking.returnDate.split("T")[1] || "10:00:00"
@@ -170,8 +182,7 @@ export const ExtendRentalModal: React.FC<ExtendRentalModalProps> = ({
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${supabaseKey}`,
-            apikey: supabaseKey,
+            Authorization: `Bearer ${session.access_token}`, // Use user's token
           },
           body: JSON.stringify({
             bookingId: booking.id,
@@ -179,6 +190,8 @@ export const ExtendRentalModal: React.FC<ExtendRentalModalProps> = ({
             newReturnDate: newReturnDateTime,
             extensionAmount: pricing.extensionAmount,
             additionalDays: pricing.additionalDays,
+            // Pass customer email from booking for Stripe
+            customerEmail: booking.customerInfo?.email || "",
           }),
         }
       );

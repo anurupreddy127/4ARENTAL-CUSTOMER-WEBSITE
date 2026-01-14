@@ -240,40 +240,110 @@ function mapBookingFromDB(row: any): Booking {
 
   return {
     id: row.id,
+
+    // Booking number
+    bookingNumber: row.booking_number || null,
+
+    // User and vehicle
     userId: row.user_id,
     vehicleId: row.vehicle_id,
+
+    // Pickup location and type
     pickupLocation: row.pickup_location,
-    pickupType: row.pickup_type as "store" | "delivery",
-    deliveryLocationId: row.delivery_location_id,
+    pickupType: (row.pickup_type as "store" | "delivery") || "store",
+    deliveryLocationId: row.delivery_location_id || null,
     deliveryFee: parseNumber(row.delivery_fee),
-    additionalDriverFee: parseNumber(row.additional_driver_fee),
+    deliveryTimeSlot: row.delivery_time_slot || null,
+
+    // Rental type and pricing
+    rentalType:
+      (row.rental_type as "weekly" | "monthly" | "semester") || "weekly",
+    rentalDays: row.rental_days || null,
+    pricingMethod: row.pricing_method || null,
+    dailyRate: parseNumber(row.daily_rate),
+    weeklyRate: parseNumber(row.weekly_rate),
+    monthlyRate: parseNumber(row.monthly_rate),
+
+    // Dates
     pickupDate: row.pickup_date,
     returnDate: row.return_date,
+
+    // Legacy field (for backward compatibility)
     rentalMonths: row.rental_months || 1,
+
+    // Pricing
     rentalAmount: parseNumber(row.rental_amount),
+    additionalDriverFee: parseNumber(row.additional_driver_fee),
     securityDeposit: parseNumber(row.security_deposit),
     totalPrice: parseNumber(row.total_price),
+
+    // Status
     status: row.status as BookingStatus,
     paymentStatus: (row.payment_status || "pending") as PaymentStatus,
+
+    // Customer info
     customerInfo: parseCustomerInfo(row.customer_info),
     driversLicense: row.drivers_license || undefined,
-    actualPickupDate: row.actual_pickup_date,
-    actualReturnDate: row.actual_return_date,
+
+    // Student booking
+    isStudentBooking: row.is_student_booking || false,
+    studentIdUrl: row.student_id_url || null,
+    studentVerified: row.student_verified || false,
+    studentVerifiedBy: row.student_verified_by || null,
+    studentVerifiedAt: row.student_verified_at || null,
+
+    // Insurance
+    insuranceUploaded: row.insurance_uploaded || false,
+    insuranceUploadedAt: row.insurance_uploaded_at || null,
+    insuranceUrl: row.insurance_url || null,
+    insuranceCompany: row.insurance_company || null,
+    insurancePolicyNumber: row.insurance_policy_number || null,
+    insuranceVerified: row.insurance_verified || false,
+    insuranceVerifiedBy: row.insurance_verified_by || null,
+    insuranceVerifiedAt: row.insurance_verified_at || null,
+
+    // Extensions
+    parentBookingId: row.parent_booking_id || null,
+    extensionNumber: row.extension_number || 0,
     extensionCount: row.extension_count || 0,
-    pickupMileage: row.pickup_mileage,
-    returnMileage: row.return_mileage,
+
+    // Actual dates and mileage
+    actualPickupDate: row.actual_pickup_date || null,
+    actualReturnDate: row.actual_return_date || null,
+    pickupMileage: row.pickup_mileage || null,
+    returnMileage: row.return_mileage || null,
+
+    // Photos and notes
     pickupPhotos: parsePickupPhotos(row.pickup_photos),
     adminNotes: row.admin_notes || "",
+
+    // Security deposit return
     securityDepositDeduction: parseNumber(row.security_deposit_deduction),
     securityDepositAmountReturned: parseNumber(
       row.security_deposit_amount_returned
     ),
     securityDepositReturned: row.security_deposit_returned || false,
-    securityDepositReturnDate: row.security_deposit_return_date,
+    securityDepositReturnDate: row.security_deposit_return_date || null,
     deductionReason: row.deduction_reason || "",
+
+    // Cancellation
+    cancelledAt: row.cancelled_at || null,
+    cancelledBy: row.cancelled_by || null,
+    cancellationReason: row.cancellation_reason || null,
+    cancellationFeeApplied: parseNumber(row.cancellation_fee_applied),
+
+    // Payment
+    stripePaymentIntentId: row.stripe_payment_intent_id || null,
+    paidAt: row.paid_at || null,
+
+    // Config snapshot
+    configSnapshot: row.config_snapshot || null,
+
+    // Timestamps
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
-    // Add the joined data
+
+    // Joined data
     vehicle,
     primaryDriver,
     additionalDrivers,

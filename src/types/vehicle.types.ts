@@ -2,16 +2,14 @@
 /**
  * Vehicle-related type definitions
  */
-
 export interface Vehicle {
   id: string;
   name: string;
-  category: "economy" | "suv" | "luxury";
-  price: number; // Maps to price_per_unit in DB
-  priceUnit: "month"; // Only 'month' allowed
-  image: string;
+  category: "sedan" | "suv" | "electric" | "hybrid";
+  price: number;
+  priceUnit: "month";
+  image: string | string[]; // Can be single image URL or array of URLs
   features: string[];
-
   status:
     | "available"
     | "reserved"
@@ -20,7 +18,6 @@ export interface Vehicle {
     | "maintenance"
     | "sold"
     | "in-stock";
-
   specifications: {
     seats: number;
     transmission: "automatic" | "manual";
@@ -39,7 +36,6 @@ export interface Vehicle {
     stockNumber: string;
     fuelEconomy: string;
   };
-
   description?: string;
   location?: string;
   stockNumber?: string;
@@ -49,6 +45,17 @@ export interface Vehicle {
   lastServiceDate?: string | null;
   notes?: string;
 
+  // Pricing fields
+  dailyRate?: number;
+  weeklyRate?: number;
+  monthlyRate?: number;
+  semesterRate?: number;
+
+  // Rating fields (cached from reviews)
+  averageRating?: number | null;
+  reviewCount?: number;
+
+  // Timestamps
   createdAt: Date;
   updatedAt: Date;
 }
@@ -62,7 +69,7 @@ export interface VehicleInspection {
   exteriorCondition: number;
   interiorCondition: number;
   mechanicalCondition: number;
-  damagesFound: any; // jsonb
+  damagesFound: any;
   requiresMaintenance: boolean;
   approvedForRental: boolean;
   notes?: string;
@@ -83,7 +90,7 @@ export interface VehicleMaintenance {
   laborCost?: number;
   partsCost?: number;
   totalCost?: number;
-  partsReplaced?: any; // jsonb
+  partsReplaced?: any;
   notes?: string;
   createdAt: Date;
   updatedAt: Date;

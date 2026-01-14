@@ -24,6 +24,8 @@ export * from "./calendar.types";
 // Pricing types (NEW)
 export * from "./pricing.types";
 
+export * from "./review.types";
+
 // ============================================
 // Re-export commonly used types explicitly for better IDE support
 // ============================================
