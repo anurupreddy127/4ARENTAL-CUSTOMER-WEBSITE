@@ -13,7 +13,6 @@ import {
   Car,
   Search,
   SlidersHorizontal,
-  X,
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
