@@ -1,20 +1,25 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import path from 'path';
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import path from "path";
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
-  
-  // ✅ ADDED: Path aliases
+
+  // Path aliases
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      "@": path.resolve(__dirname, "./src"),
     },
   },
-  
-  // ✅ KEPT: Your existing optimizeDeps config
+
+  // Dependency optimization
   optimizeDeps: {
-    exclude: ['lucide-react'],
+    exclude: ["lucide-react"],
   },
-});
+
+  // Remove console.log and debugger in production builds
+  esbuild: {
+    drop: mode === "production" ? ["console", "debugger"] : [],
+  },
+}));
