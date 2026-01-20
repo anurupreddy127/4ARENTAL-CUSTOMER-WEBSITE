@@ -34,6 +34,7 @@ import {
   PrimaryDriverData,
   AdditionalDriverData,
 } from "@/components/bookings/forms";
+import { supabase } from "@/config/supabase";
 
 // ============================================
 // TYPES
@@ -215,7 +216,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   const [error, setError] = useState("");
   const [showAdditionalDriver, setShowAdditionalDriver] = useState(false);
   const [bookingData, setBookingData] = useState<BookingData>(() =>
-    createInitialBookingData(currentUser?.email || "")
+    createInitialBookingData(currentUser?.email || ""),
   );
 
   // Delivery location state (two-step selection)
@@ -271,7 +272,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   const handleClose = useCallback(() => {
     if (hasFormData(bookingData) && step > 1) {
       const confirmed = window.confirm(
-        "You have unsaved booking information. Are you sure you want to close?"
+        "You have unsaved booking information. Are you sure you want to close?",
       );
       if (!confirmed) return;
     }
@@ -574,7 +575,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
         }));
       }
     },
-    [cityLocations]
+    [cityLocations],
   );
 
   const handleDeliveryTimeSlotChange = useCallback((timeSlot: string) => {
@@ -594,7 +595,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
         },
       }));
     },
-    []
+    [],
   );
 
   const handleAddAdditionalDriver = useCallback(() => {
@@ -630,7 +631,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
     (
       index: number,
       field: keyof AdditionalDriverData,
-      value: string | boolean
+      value: string | boolean,
     ) => {
       setBookingData((prev) => ({
         ...prev,
@@ -661,7 +662,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
         }),
       }));
     },
-    []
+    [],
   );
 
   const handleToggleAdditionalDriverSection = useCallback(() => {
@@ -700,14 +701,14 @@ export const BookingModal: React.FC<BookingModalProps> = ({
             city: bookingData.primaryDriver.city,
             state: bookingData.primaryDriver.state,
             zipCode: bookingData.primaryDriver.zipCode,
-          }
+          },
         );
 
         const timeoutPromise = new Promise<never>((_, reject) =>
           setTimeout(
             () => reject(new Error("Profile save timeout")),
-            PROFILE_SAVE_TIMEOUT_MS
-          )
+            PROFILE_SAVE_TIMEOUT_MS,
+          ),
         );
 
         await Promise.race([profileSavePromise, timeoutPromise]);
@@ -722,7 +723,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
 
       if (!supabaseUrl || !supabaseKey) {
         throw new Error(
-          "Application configuration error. Please contact support."
+          "Application configuration error. Please contact support.",
         );
       }
 
@@ -773,18 +774,28 @@ export const BookingModal: React.FC<BookingModalProps> = ({
         }),
       };
 
-      // Step 4: Make API call
+      // Step 4: Get user session token for authentication
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession();
+
+      if (sessionError || !sessionData.session) {
+        throw new Error("Your session has expired. Please log in again.");
+      }
+
+      const accessToken = sessionData.session.access_token;
+
+      // Step 5: Make API call with user's token
       const response = await fetch(
         `${supabaseUrl}/functions/v1/create-checkout-session`,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${supabaseKey}`,
+            Authorization: `Bearer ${accessToken}`, // ✅ CORRECT - User's JWT token
             apikey: supabaseKey,
           },
           body: JSON.stringify(payload),
-        }
+        },
       );
 
       if (!response.ok) {

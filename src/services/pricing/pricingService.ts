@@ -36,18 +36,18 @@ interface RawPricingResult {
 }
 
 interface RawBookingTotal {
-  rental_days: number;
-  rental_type: string;
-  pricing_method: string;
-  daily_rate: number;
-  weekly_rate: number;
-  monthly_rate: number;
-  rental_amount: number;
-  security_deposit: number;
-  delivery_fee: number;
-  additional_driver_fee: number;
-  subtotal: number;
-  total_due_now: number;
+  rental_days: number | null;
+  rental_type: string | null;
+  pricing_method: string | null;
+  daily_rate: number | null;
+  weekly_rate: number | null;
+  monthly_rate: number | null;
+  rental_amount: number | null;
+  security_deposit: number | null;
+  delivery_fee: number | null;
+  additional_driver_fee: number | null;
+  subtotal: number | null;
+  total_due_now: number | null;
 }
 
 interface RawExtensionPricing {
@@ -125,18 +125,18 @@ function mapPricingResult(raw: RawPricingResult): PricingResult {
  */
 function mapBookingTotal(raw: RawBookingTotal): BookingTotal {
   return {
-    rentalDays: raw.rental_days,
-    rentalType: raw.rental_type as RentalType,
-    pricingMethod: raw.pricing_method as PricingMethod,
-    dailyRate: raw.daily_rate,
-    weeklyRate: raw.weekly_rate,
-    monthlyRate: raw.monthly_rate,
-    rentalAmount: raw.rental_amount,
-    securityDeposit: raw.security_deposit,
-    deliveryFee: raw.delivery_fee,
-    additionalDriverFee: raw.additional_driver_fee,
-    subtotal: raw.subtotal,
-    totalDueNow: raw.total_due_now,
+    rentalDays: raw.rental_days ?? 0,
+    rentalType: (raw.rental_type as RentalType) ?? "weekly",
+    pricingMethod: (raw.pricing_method as PricingMethod) ?? "weekly",
+    dailyRate: raw.daily_rate ?? 0,
+    weeklyRate: raw.weekly_rate ?? 0,
+    monthlyRate: raw.monthly_rate ?? 0,
+    rentalAmount: raw.rental_amount ?? 0,
+    securityDeposit: raw.security_deposit ?? 0,
+    deliveryFee: raw.delivery_fee ?? 0,
+    additionalDriverFee: raw.additional_driver_fee ?? 0,
+    subtotal: raw.subtotal ?? 0,
+    totalDueNow: raw.total_due_now ?? 0,
   };
 }
 
@@ -165,7 +165,7 @@ export const pricingService = {
     vehicleId: string,
     pickupDate: Date | string,
     returnDate: Date | string,
-    isStudent: boolean = false
+    isStudent: boolean = false,
   ): Promise<PricingResult> {
     logInfo(`Calculating price for vehicle ${vehicleId}`);
 
@@ -202,7 +202,7 @@ export const pricingService = {
     vehicleId: string,
     pickupDate: Date | string,
     returnDate: Date | string,
-    isStudent: boolean = false
+    isStudent: boolean = false,
   ): Promise<{
     rentalDays: number;
     rentalType: RentalType;
@@ -256,7 +256,7 @@ export const pricingService = {
     returnDate: Date | string,
     isStudent: boolean = false,
     deliveryFee: number = 0,
-    additionalDrivers: number = 0
+    additionalDrivers: number = 0,
   ): Promise<BookingTotal> {
     logInfo(`Calculating booking total for vehicle ${vehicleId}`);
 
@@ -270,6 +270,10 @@ export const pricingService = {
         p_additional_drivers: additionalDrivers,
       });
 
+      // ADD THESE LINES FOR DEBUGGING
+      console.log("[DEBUG] Raw RPC response data:", data);
+      console.log("[DEBUG] Raw RPC response data[0]:", data?.[0]);
+
       if (error) {
         logError("calculateBookingTotal", error);
         throw new Error(error.message || "Failed to calculate booking total");
@@ -280,6 +284,10 @@ export const pricingService = {
       }
 
       const result = data[0] as RawBookingTotal;
+
+      // ADD THIS LINE FOR DEBUGGING
+      console.log("[DEBUG] Mapped result:", mapBookingTotal(result));
+
       logInfo(`Booking total calculated: $${result.total_due_now}`);
 
       return mapBookingTotal(result);
@@ -296,7 +304,7 @@ export const pricingService = {
   async calculateExtensionPrice(
     vehicleId: string,
     currentReturnDate: Date | string,
-    newReturnDate: Date | string
+    newReturnDate: Date | string,
   ): Promise<ExtensionPricing> {
     logInfo(`Calculating extension price for vehicle ${vehicleId}`);
 

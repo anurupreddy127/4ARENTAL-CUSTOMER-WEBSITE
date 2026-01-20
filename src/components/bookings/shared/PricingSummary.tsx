@@ -25,7 +25,13 @@ interface LineItemProps {
 // ============================================
 // HELPER FUNCTIONS
 // ============================================
-function formatCurrency(amount: number, showPlus = false): string {
+function formatCurrency(
+  amount: number | null | undefined,
+  showPlus = false,
+): string {
+  if (amount === null || amount === undefined) {
+    return "$0.00";
+  }
   const formatted = `$${amount.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
@@ -96,8 +102,8 @@ const LineItem: React.FC<LineItemProps> = ({
           isTotal
             ? "font-semibold text-gray-900"
             : isDeposit
-            ? "text-gray-600 flex items-center gap-1"
-            : "text-gray-600"
+              ? "text-gray-600 flex items-center gap-1"
+              : "text-gray-600"
         }
       >
         {label}
@@ -210,7 +216,7 @@ export const PricingSummary: React.FC<PricingSummaryProps> = ({
   const rentalDescription = getRentalDescription(pricing);
   const pricingMethodLabel = getPricingMethodLabel(
     pricing.pricingMethod,
-    pricing.rentalType
+    pricing.rentalType,
   );
 
   return (
@@ -241,8 +247,8 @@ export const PricingSummary: React.FC<PricingSummaryProps> = ({
             pricing.rentalType === "semester"
               ? formatCurrency(pricing.rentalAmount)
               : pricing.pricingMethod === "monthly"
-              ? `${formatCurrency(pricing.monthlyRate)}/month`
-              : `${formatCurrency(pricing.weeklyRate)}/week`
+                ? `${formatCurrency(pricing.monthlyRate)}/month`
+                : `${formatCurrency(pricing.weeklyRate)}/week`
           }
           description={
             pricing.rentalType !== "semester" && pricing.dailyRate > 0
