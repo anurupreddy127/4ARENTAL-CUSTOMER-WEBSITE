@@ -33,6 +33,16 @@ import { Navbar, Footer } from "@/components/layout";
 // ============================================
 const MAX_STARS = 5;
 
+// Statuses that indicate a vehicle is booked (not available for new bookings)
+const BOOKED_STATUSES: Vehicle["status"][] = ["reserved", "rented"];
+
+// Statuses that are allowed to be viewed on the details page
+const VIEWABLE_STATUSES: Vehicle["status"][] = [
+  "available",
+  "reserved",
+  "rented",
+];
+
 const CONTACT_INFO = {
   phone: "+1 (469) 403-7094",
   phoneHref: "tel:+14694037094",
@@ -259,6 +269,24 @@ const InfoItem: React.FC<InfoItemProps> = ({ label, value, mono }) => {
   );
 };
 
+const BookedBanner: React.FC = () => (
+  <div
+    className="bg-gray-900 text-white px-4 py-3 rounded-xl flex items-center gap-3"
+    role="status"
+    aria-live="polite"
+  >
+    <div className="bg-white/20 rounded-full p-2">
+      <Calendar className="w-5 h-5" />
+    </div>
+    <div>
+      <p className="font-semibold">Currently Booked</p>
+      <p className="text-sm text-gray-300">
+        This vehicle is not available for booking right now
+      </p>
+    </div>
+  </div>
+);
+
 // ============================================
 // MAIN COMPONENT
 // ============================================
@@ -276,7 +304,7 @@ export const VehicleDetails: React.FC = () => {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<"login" | "register">(
-    "login"
+    "login",
   );
 
   // Image gallery state
@@ -302,6 +330,12 @@ export const VehicleDetails: React.FC = () => {
     returnDate: returnDate || null,
     enabled: Boolean(pickupDate && returnDate),
   });
+
+  // Check if vehicle is currently booked
+  const isBooked = useMemo(
+    () => vehicle !== null && BOOKED_STATUSES.includes(vehicle.status),
+    [vehicle],
+  );
 
   // ============================================
   // MEMOIZED VALUES
@@ -338,12 +372,15 @@ export const VehicleDetails: React.FC = () => {
   }, []);
 
   const handleBookingModalOpen = useCallback(() => {
+    // Don't allow booking if vehicle is booked
+    if (isBooked) return;
+
     if (currentUser) {
       setIsBookingModalOpen(true);
     } else {
       setIsAuthModalOpen(true);
     }
-  }, [currentUser]);
+  }, [currentUser, isBooked]);
 
   const handleBookingModalClose = useCallback(() => {
     setIsBookingModalOpen(false);
@@ -379,14 +416,14 @@ export const VehicleDetails: React.FC = () => {
         setReturnDate(getDefaultReturnDate(newPickupDate));
       }
     },
-    [returnDate]
+    [returnDate],
   );
 
   const handleReturnDateChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       setReturnDate(e.target.value);
     },
-    []
+    [],
   );
 
   // ============================================
@@ -411,11 +448,13 @@ export const VehicleDetails: React.FC = () => {
         if (cancelled) return;
 
         if (vehicleData) {
-          if (vehicleData.status !== "available") {
-            setError("This vehicle is not currently available for booking");
-            setVehicle(null);
-          } else {
+          // Allow viewing available, reserved, and rented vehicles
+          if (VIEWABLE_STATUSES.includes(vehicleData.status)) {
             setVehicle(vehicleData);
+          } else {
+            // Block vehicles in maintenance, inspection, sold, etc.
+            setError("This vehicle is not currently available");
+            setVehicle(null);
           }
         } else {
           setError("Vehicle not found");
@@ -506,6 +545,7 @@ export const VehicleDetails: React.FC = () => {
           </button>
 
           {/* Title & Rating Row */}
+          {/* Title & Rating Row */}
           <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-6">
             <div>
               <h1 className="font-heading text-3xl lg:text-4xl text-text-100 uppercase tracking-wide">
@@ -524,6 +564,13 @@ export const VehicleDetails: React.FC = () => {
               {vehicle.category}
             </span>
           </div>
+
+          {/* Booked Status Banner */}
+          {isBooked && (
+            <div className="mb-6">
+              <BookedBanner />
+            </div>
+          )}
 
           <div className="grid lg:grid-cols-3 gap-8">
             {/* Left Column - Images & Details */}
@@ -829,18 +876,32 @@ export const VehicleDetails: React.FC = () => {
 
                   <Button
                     onClick={handleBookingModalOpen}
-                    variant="primary"
+                    variant={isBooked ? "secondary" : "primary"}
                     fullWidth
                     size="lg"
-                    className="mt-6"
+                    className={`mt-6 ${isBooked ? "opacity-60 cursor-not-allowed" : ""}`}
+                    disabled={isBooked}
+                    aria-label={
+                      isBooked
+                        ? "This vehicle is currently booked"
+                        : currentUser
+                          ? `Book ${vehicle.name}`
+                          : "Sign in to book"
+                    }
                   >
-                    {currentUser ? "Book Now" : "Sign In to Book"}
+                    {isBooked
+                      ? "Currently Booked"
+                      : currentUser
+                        ? "Book Now"
+                        : "Sign In to Book"}
                   </Button>
 
-                  <p className="text-center text-xs text-text-200 mt-3 flex items-center justify-center gap-1">
-                    <Shield className="w-4 h-4" />
-                    Secure Booking Transaction
-                  </p>
+                  {!isBooked && (
+                    <p className="text-center text-xs text-text-200 mt-3 flex items-center justify-center gap-1">
+                      <Shield className="w-4 h-4" />
+                      Secure Booking Transaction
+                    </p>
+                  )}
                 </Card>
 
                 {/* Contact Info */}

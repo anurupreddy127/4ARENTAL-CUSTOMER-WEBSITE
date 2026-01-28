@@ -42,6 +42,9 @@ const PRICE_UNIT_LABELS: Record<PriceUnit, string> = {
   semester: "/sem",
 };
 
+// Statuses that indicate a vehicle is not available for booking
+const BOOKED_STATUSES: Vehicle["status"][] = ["reserved", "rented"];
+
 // ============================================
 // SUB-COMPONENTS
 // ============================================
@@ -73,6 +76,16 @@ const StarRating: React.FC<{ rating: number }> = ({ rating }) => (
   </div>
 );
 
+const BookedBadge: React.FC = () => (
+  <div
+    className="bookedBadge"
+    role="status"
+    aria-label="This vehicle is currently booked"
+  >
+    <span className="bookedText">Booked</span>
+  </div>
+);
+
 // ============================================
 // MAIN COMPONENT
 // ============================================
@@ -84,17 +97,23 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
   displayPrice,
   priceUnit = "month",
 }) => {
+  // Check if vehicle is booked (reserved or rented)
+  const isBooked = useMemo(
+    () => BOOKED_STATUSES.includes(vehicle.status),
+    [vehicle.status],
+  );
+
   // Use displayPrice if provided, otherwise fall back to vehicle.price
   const price = useMemo(
     () => displayPrice ?? vehicle.price,
-    [displayPrice, vehicle.price]
+    [displayPrice, vehicle.price],
   );
 
   const priceLabel = useMemo(() => PRICE_UNIT_LABELS[priceUnit], [priceUnit]);
 
   const imageUrl = useMemo(
     () => (Array.isArray(vehicle.image) ? vehicle.image[0] : vehicle.image),
-    [vehicle.image]
+    [vehicle.image],
   );
 
   const imageAlt = useMemo(() => {
@@ -124,23 +143,24 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
         label: String(vehicle.specifications.year),
       },
     ],
-    [vehicle.specifications]
+    [vehicle.specifications],
   );
 
   const visibleFeatures = useMemo(
     () => vehicle.features.slice(0, MAX_VISIBLE_FEATURES),
-    [vehicle.features]
+    [vehicle.features],
   );
 
-  const buttonText = useMemo(
-    () => (isAuthenticated ? "Book Now" : "Sign In"),
-    [isAuthenticated]
-  );
+  // Button text changes based on booking status and auth
+  const buttonText = useMemo(() => {
+    if (isBooked) return "Booked";
+    return isAuthenticated ? "Book Now" : "Sign In";
+  }, [isBooked, isAuthenticated]);
 
-  const cardAriaLabel = useMemo(
-    () => `${vehicle.name}, $${price} ${priceLabel}. Click to view details.`,
-    [vehicle.name, price, priceLabel]
-  );
+  const cardAriaLabel = useMemo(() => {
+    const bookedStatus = isBooked ? " Currently booked." : "";
+    return `${vehicle.name}, $${price} ${priceLabel}.${bookedStatus} Click to view details.`;
+  }, [vehicle.name, price, priceLabel, isBooked]);
 
   // Handlers
   const handleCardClick = useCallback(() => onCardClick(), [onCardClick]);
@@ -154,19 +174,21 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
         }
       }
     },
-    [onCardClick]
+    [onCardClick],
   );
 
   const handleBookClick = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
+      // Don't trigger booking flow if vehicle is booked
+      if (isBooked) return;
       onBookClick(e);
     },
-    [onBookClick]
+    [onBookClick, isBooked],
   );
 
   return (
-    <StyledWrapper>
+    <StyledWrapper $isBooked={isBooked}>
       <article
         className="card"
         onClick={handleCardClick}
@@ -178,6 +200,7 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
         {/* IMAGE */}
         <div className="imageWrap">
           <img className="image" src={imageUrl} alt={imageAlt} loading="lazy" />
+          {isBooked && <BookedBadge />}
         </div>
 
         {/* CONTENT */}
@@ -211,10 +234,15 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
 
             <Button
               onClick={handleBookClick}
-              variant="primary"
-              className="cta"
+              variant={isBooked ? "secondary" : "primary"}
+              className={`cta ${isBooked ? "ctaBooked" : ""}`}
+              disabled={isBooked}
               aria-label={
-                isAuthenticated ? `Book ${vehicle.name}` : "Sign in to book"
+                isBooked
+                  ? "This vehicle is currently booked"
+                  : isAuthenticated
+                    ? `Book ${vehicle.name}`
+                    : "Sign in to book"
               }
             >
               {buttonText}
@@ -228,7 +256,7 @@ export const VehicleCard: React.FC<VehicleCardProps> = ({
   );
 };
 
-const StyledWrapper = styled.div`
+const StyledWrapper = styled.div<{ $isBooked: boolean }>`
   /* Your requested base card design, but responsive-friendly */
   .card {
     width: 100%;
@@ -237,30 +265,41 @@ const StyledWrapper = styled.div`
     border-radius: 18px;
     overflow: hidden;
 
-    box-shadow: rgba(0, 0, 0, 0.35) 0px 2px 4px,
+    box-shadow:
+      rgba(0, 0, 0, 0.35) 0px 2px 4px,
       rgba(0, 0, 0, 0.22) 0px 7px 13px -3px,
       rgba(0, 0, 0, 0.18) 0px -3px 0px inset;
 
-    transition: transform 0.25s ease, box-shadow 0.25s ease;
+    transition:
+      transform 0.25s ease,
+      box-shadow 0.25s ease;
     cursor: pointer;
     outline: none;
+
+    /* Subtle visual indication for booked vehicles */
+    opacity: ${({ $isBooked }) => ($isBooked ? 0.85 : 1)};
   }
 
   .card:hover {
     transform: translateY(-2px);
-    box-shadow: rgba(0, 0, 0, 0.4) 0px 6px 16px,
+    box-shadow:
+      rgba(0, 0, 0, 0.4) 0px 6px 16px,
       rgba(0, 0, 0, 0.25) 0px 10px 22px -6px,
       rgba(0, 0, 0, 0.16) 0px -3px 0px inset;
+    opacity: 1;
   }
 
   .card:focus-visible {
-    box-shadow: 0 0 0 4px rgba(255, 215, 0, 0.35),
-      rgba(0, 0, 0, 0.35) 0px 6px 16px, rgba(0, 0, 0, 0.25) 0px 10px 22px -6px,
+    box-shadow:
+      0 0 0 4px rgba(255, 215, 0, 0.35),
+      rgba(0, 0, 0, 0.35) 0px 6px 16px,
+      rgba(0, 0, 0, 0.25) 0px 10px 22px -6px,
       rgba(0, 0, 0, 0.16) 0px -3px 0px inset;
   }
 
   /* IMAGE */
   .imageWrap {
+    position: relative;
     height: 170px;
     background: var(--bg-300, #c4c4c4);
     border-bottom: 1px solid rgba(0, 0, 0, 0.08);
@@ -271,6 +310,26 @@ const StyledWrapper = styled.div`
     height: 100%;
     object-fit: cover;
     display: block;
+  }
+
+  /* BOOKED BADGE */
+  .bookedBadge {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(4px);
+    padding: 6px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .bookedText {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #fff;
   }
 
   /* CONTENT */
@@ -400,6 +459,20 @@ const StyledWrapper = styled.div`
     color: var(--text-100, #333333);
     border: 1px solid rgba(0, 0, 0, 0.12);
     box-shadow: 0 8px 18px rgba(255, 215, 0, 0.22);
+  }
+
+  /* Booked button styles */
+  .ctaBooked {
+    background: var(--bg-300, #c4c4c4);
+    color: var(--text-200, #5c5c5c);
+    box-shadow: none;
+    cursor: not-allowed;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+  }
+
+  .ctaBooked:hover {
+    background: var(--bg-300, #c4c4c4);
+    transform: none;
   }
 
   .stars {

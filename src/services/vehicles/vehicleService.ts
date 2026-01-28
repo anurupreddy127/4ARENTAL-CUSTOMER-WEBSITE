@@ -160,7 +160,7 @@ export const vehicleService = {
       const { data, error } = await supabase
         .from("vehicles")
         .select("*")
-        .eq("status", "available")
+        .in("status", ["available", "reserved", "rented"])
         .order("created_at", { ascending: false });
 
       if (error) {
@@ -190,7 +190,7 @@ export const vehicleService = {
       const { data, error } = await supabase
         .from("vehicles")
         .select("*")
-        .eq("status", "available")
+        .in("status", ["available", "reserved", "rented"])
         .eq("category", sanitizedCategory)
         .order("created_at", { ascending: false });
 
@@ -260,7 +260,7 @@ export const vehicleService = {
       const { data, error } = await supabase
         .from("vehicles")
         .select("category")
-        .eq("status", "available");
+        .in("status", ["available", "reserved", "rented"]);
 
       if (error) {
         logError("getCategories", error);
@@ -269,7 +269,7 @@ export const vehicleService = {
 
       const categories = [
         ...new Set(
-          (data || []).map((v) => v.category as string).filter(Boolean)
+          (data || []).map((v) => v.category as string).filter(Boolean),
         ),
       ].sort();
 
@@ -296,7 +296,7 @@ export const vehicleService = {
       const { data, error } = await supabase
         .from("vehicles")
         .select("*")
-        .eq("status", "available")
+        .in("status", ["available", "reserved", "rented"])
         .or(`name.ilike.%${escapedQuery}%,category.ilike.%${escapedQuery}%`)
         .order("created_at", { ascending: false })
         .limit(20);
@@ -331,7 +331,7 @@ export const vehicleService = {
       const { data, error } = await supabase
         .from("vehicles")
         .select("*")
-        .eq("status", "available")
+        .in("status", ["available", "reserved", "rented"])
         .order("created_at", { ascending: false })
         .limit(validatedLimit);
 
@@ -397,7 +397,7 @@ export const vehicleService = {
    */
   async getVehiclesByPriceRange(
     minPrice: number,
-    maxPrice: number
+    maxPrice: number,
   ): Promise<Vehicle[]> {
     try {
       const validatedMin = z.number().min(0).parse(minPrice);
@@ -410,7 +410,7 @@ export const vehicleService = {
       const { data, error } = await supabase
         .from("vehicles")
         .select("*")
-        .eq("status", "available")
+        .in("status", ["available", "reserved", "rented"])
         .gte("price", validatedMin)
         .lte("price", validatedMax)
         .order("price", { ascending: true });
@@ -443,7 +443,7 @@ export const vehicleService = {
       const { data, error } = await supabase
         .from("vehicles")
         .select("category")
-        .eq("status", "available");
+        .in("status", ["available", "reserved", "rented"]);
 
       if (error) {
         logError("getCategoryCounts", error);
