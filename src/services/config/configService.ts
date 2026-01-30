@@ -1,19 +1,12 @@
-// services/config/configService.ts
+// services/config/configService.ts (With Redis Caching)
 /**
  * Service for fetching and managing system configuration
+ * ✅ Now uses Redis caching via Edge Function (1 hour TTL)
  */
 
-import { supabase } from "@/config/supabase";
+import { cachedApi } from "@/config/api";
 import type { ConfigKey, ParsedConfigMap } from "@/types";
 import * as Sentry from "@sentry/react";
-
-// ============================================
-// TYPES
-// ============================================
-
-interface RawConfigMap {
-  [key: string]: string;
-}
 
 // ============================================
 // HELPER FUNCTIONS
@@ -46,8 +39,14 @@ function logError(context: string, error: unknown): void {
  */
 function parseConfigValue(
   key: string,
-  value: string
+  value: unknown,
 ): string | number | boolean {
+  // Already parsed (from cache)
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value;
+
+  const strValue = String(value);
+
   // Boolean configs
   const booleanKeys = [
     "us_license_only",
@@ -58,7 +57,7 @@ function parseConfigValue(
   ];
 
   if (booleanKeys.includes(key)) {
-    return value === "true";
+    return strValue === "true";
   }
 
   // String configs (keep as string)
@@ -71,18 +70,18 @@ function parseConfigValue(
   ];
 
   if (stringKeys.includes(key)) {
-    return value;
+    return strValue;
   }
 
   // Everything else is numeric
-  const parsed = parseFloat(value);
+  const parsed = parseFloat(strValue);
   return isNaN(parsed) ? 0 : parsed;
 }
 
 /**
  * Parse all config values
  */
-function parseAllConfigs(raw: RawConfigMap): ParsedConfigMap {
+function parseAllConfigs(raw: Record<string, unknown>): ParsedConfigMap {
   const parsed: Partial<ParsedConfigMap> = {};
 
   for (const [key, value] of Object.entries(raw)) {
@@ -93,84 +92,54 @@ function parseAllConfigs(raw: RawConfigMap): ParsedConfigMap {
 }
 
 // ============================================
-// CACHE
+// IN-MEMORY FALLBACK CACHE
 // ============================================
+// Keeps a local copy in case Edge Function is unavailable
 
-let configCache: ParsedConfigMap | null = null;
-let cacheTimestamp: number = 0;
-const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
-
-/**
- * Check if cache is still valid
- */
-function isCacheValid(): boolean {
-  if (!configCache) return false;
-  return Date.now() - cacheTimestamp < CACHE_DURATION_MS;
-}
-
-/**
- * Clear the config cache
- */
-export function clearConfigCache(): void {
-  configCache = null;
-  cacheTimestamp = 0;
-  logInfo("Cache cleared");
-}
+let fallbackCache: ParsedConfigMap | null = null;
 
 // ============================================
-// SERVICE
+// SERVICE (WITH REDIS CACHING)
 // ============================================
 
 export const configService = {
   /**
-   * Get all configs (with caching)
+   * Get all configs
+   * ✅ CACHED via Redis (1 hour TTL)
    */
   async getAllConfigs(): Promise<ParsedConfigMap> {
-    // Return cached if valid
-    if (isCacheValid() && configCache) {
-      logInfo("Returning cached configs");
-      return configCache;
-    }
-
-    logInfo("Fetching configs from database...");
+    logInfo("Fetching configs from cached API...");
 
     try {
-      // Use the database function for efficiency
-      const { data, error } = await supabase.rpc("get_all_configs");
+      const data = await cachedApi.config.all();
 
-      if (error) {
-        logError("getAllConfigs", error);
-        throw new Error("Failed to load configuration");
-      }
-
-      if (!data) {
+      if (!data || Object.keys(data).length === 0) {
         throw new Error("No configuration data returned");
       }
 
-      // Parse and cache
-      configCache = parseAllConfigs(data as RawConfigMap);
-      cacheTimestamp = Date.now();
+      // Parse values and update fallback cache
+      const parsed = parseAllConfigs(data);
+      fallbackCache = parsed;
 
-      logInfo(
-        `Configs loaded and cached (${Object.keys(configCache).length} values)`
-      );
+      logInfo(`Configs loaded (${Object.keys(parsed).length} values)`);
 
-      return configCache;
+      return parsed;
     } catch (error) {
       logError("getAllConfigs", error);
 
-      // Return cached even if expired, as fallback
-      if (configCache) {
-        logInfo("Returning stale cache as fallback");
-        return configCache;
+      // Return fallback cache if available
+      if (fallbackCache) {
+        logInfo("Returning fallback cache");
+        return fallbackCache;
       }
 
-      throw error;
+      throw new Error("Failed to load configuration");
     }
   },
 
   /**
    * Get a single config value
+   * ✅ Uses cached getAllConfigs()
    */
   async getConfig<K extends ConfigKey>(key: K): Promise<ParsedConfigMap[K]> {
     const configs = await this.getAllConfigs();
@@ -179,9 +148,10 @@ export const configService = {
 
   /**
    * Get multiple config values
+   * ✅ Uses cached getAllConfigs()
    */
   async getConfigs<K extends ConfigKey>(
-    keys: K[]
+    keys: K[],
   ): Promise<Pick<ParsedConfigMap, K>> {
     const configs = await this.getAllConfigs();
     const result: Partial<Pick<ParsedConfigMap, K>> = {};
@@ -195,6 +165,7 @@ export const configService = {
 
   /**
    * Get fee-related configs
+   * ✅ CACHED via Redis (1 hour TTL)
    */
   async getFeeConfigs() {
     return this.getConfigs([
@@ -211,6 +182,7 @@ export const configService = {
 
   /**
    * Get timing-related configs
+   * ✅ CACHED via Redis (1 hour TTL)
    */
   async getTimingConfigs() {
     return this.getConfigs([
@@ -225,6 +197,7 @@ export const configService = {
 
   /**
    * Get extension-related configs
+   * ✅ CACHED via Redis (1 hour TTL)
    */
   async getExtensionConfigs() {
     return this.getConfigs([
@@ -237,6 +210,7 @@ export const configService = {
 
   /**
    * Get driver-related configs
+   * ✅ CACHED via Redis (1 hour TTL)
    */
   async getDriverConfigs() {
     return this.getConfigs([
@@ -250,6 +224,7 @@ export const configService = {
 
   /**
    * Get store hours configs
+   * ✅ CACHED via Redis (1 hour TTL)
    */
   async getStoreHoursConfigs() {
     return this.getConfigs([
@@ -262,6 +237,7 @@ export const configService = {
 
   /**
    * Get delivery-related configs
+   * ✅ CACHED via Redis (1 hour TTL)
    */
   async getDeliveryConfigs() {
     return this.getConfigs([
@@ -271,3 +247,11 @@ export const configService = {
     ]);
   },
 };
+
+/**
+ * Clear the fallback cache (exported for testing/admin use)
+ */
+export function clearConfigCache(): void {
+  fallbackCache = null;
+  logInfo("Fallback cache cleared");
+}

@@ -1,5 +1,5 @@
-// services/deliveryLocationService.ts
-import { supabase } from "@/config/supabase";
+// services/deliveryLocations/deliveryLocationService.ts (With Redis Caching)
+import { cachedApi } from "@/config/api";
 import { z } from "zod";
 import * as Sentry from "@sentry/react";
 
@@ -35,7 +35,8 @@ interface DeliveryLocationRow {
   city: string;
   state: string;
   zip_code: string;
-  delivery_fee: string | number | null;
+  fee: string | number | null;
+  delivery_fee?: string | number | null;
   is_active: boolean;
   notes: string | null;
   created_at: string;
@@ -93,7 +94,7 @@ function isPassthroughError(error: unknown): boolean {
 /**
  * Safely parse delivery fee
  */
-function parseDeliveryFee(value: string | number | null): number {
+function parseDeliveryFee(value: string | number | null | undefined): number {
   if (value === null || value === undefined) return 0;
   if (typeof value === "number") return value;
   const parsed = parseFloat(value);
@@ -111,7 +112,7 @@ function mapLocationFromDB(row: DeliveryLocationRow): DeliveryLocation {
     city: row.city,
     state: row.state,
     zipCode: row.zip_code,
-    deliveryFee: parseDeliveryFee(row.delivery_fee),
+    deliveryFee: parseDeliveryFee(row.fee ?? row.delivery_fee),
     isActive: row.is_active,
     notes: row.notes || undefined,
     createdAt: new Date(row.created_at),
@@ -120,26 +121,19 @@ function mapLocationFromDB(row: DeliveryLocationRow): DeliveryLocation {
 }
 
 // ============================================
-// DELIVERY LOCATION SERVICE
+// DELIVERY LOCATION SERVICE (WITH REDIS CACHING)
 // ============================================
 export const deliveryLocationService = {
   /**
    * Get all cities that have active delivery locations
    * Used for the first dropdown in booking form
    * Returns cities with location count and minimum fee
+   * ✅ CACHED (1 hour TTL)
    */
   async getAvailableCities(): Promise<CityOption[]> {
     try {
-      const { data, error } = await supabase
-        .from("delivery_locations")
-        .select("city, state, delivery_fee")
-        .eq("is_active", true)
-        .order("city", { ascending: true });
-
-      if (error) {
-        logError("getAvailableCities", error);
-        throw createUserError("getCities");
-      }
+      // Get all locations from cache and compute city stats
+      const data = await cachedApi.deliveryLocations.all();
 
       if (!data || data.length === 0) {
         return [];
@@ -148,9 +142,9 @@ export const deliveryLocationService = {
       // Group by city and calculate stats
       const cityMap = new Map<string, CityOption>();
 
-      for (const row of data) {
+      for (const row of data as DeliveryLocationRow[]) {
         const key = `${row.city}-${row.state}`;
-        const fee = parseDeliveryFee(row.delivery_fee);
+        const fee = parseDeliveryFee(row.fee ?? row.delivery_fee);
 
         if (cityMap.has(key)) {
           const existing = cityMap.get(key)!;
@@ -167,7 +161,7 @@ export const deliveryLocationService = {
       }
 
       return Array.from(cityMap.values()).sort((a, b) =>
-        a.city.localeCompare(b.city)
+        a.city.localeCompare(b.city),
       );
     } catch (error) {
       if (isPassthroughError(error)) {
@@ -182,6 +176,7 @@ export const deliveryLocationService = {
    * Get delivery locations for a specific city
    * Used for the second dropdown in booking form (after city selection)
    * Returns locations sorted by delivery fee (cheapest first)
+   * ✅ CACHED (1 hour TTL)
    */
   async getLocationsByCity(city: string): Promise<DeliveryLocation[]> {
     try {
@@ -191,23 +186,17 @@ export const deliveryLocationService = {
         return [];
       }
 
-      const { data, error } = await supabase
-        .from("delivery_locations")
-        .select("*")
-        .eq("is_active", true)
-        .ilike("city", validatedCity.data)
-        .order("delivery_fee", { ascending: true });
-
-      if (error) {
-        logError("getLocationsByCity", error);
-        throw createUserError("getLocations");
-      }
+      // Convert city name to slug format for API call
+      const citySlug = validatedCity.data.toLowerCase().replace(/\s+/g, "-");
+      const data = await cachedApi.deliveryLocations.byCity(citySlug);
 
       if (!data || data.length === 0) {
         return [];
       }
 
-      return data.map((row) => mapLocationFromDB(row as DeliveryLocationRow));
+      return (data as DeliveryLocationRow[])
+        .map(mapLocationFromDB)
+        .sort((a, b) => a.deliveryFee - b.deliveryFee);
     } catch (error) {
       if (isPassthroughError(error)) {
         throw error;
@@ -220,6 +209,7 @@ export const deliveryLocationService = {
   /**
    * Get a single delivery location by ID
    * Used to display selected location details or validate booking
+   * ✅ CACHED (1 hour TTL)
    */
   async getLocation(id: string): Promise<DeliveryLocation | null> {
     try {
@@ -229,17 +219,7 @@ export const deliveryLocationService = {
         return null;
       }
 
-      const { data, error } = await supabase
-        .from("delivery_locations")
-        .select("*")
-        .eq("id", validatedId.data)
-        .eq("is_active", true) // Only return active locations
-        .maybeSingle();
-
-      if (error) {
-        logError("getLocation", error);
-        throw createUserError("getLocations");
-      }
+      const data = await cachedApi.deliveryLocations.single(validatedId.data);
 
       if (!data) {
         return null;
@@ -259,11 +239,17 @@ export const deliveryLocationService = {
    * Get delivery fee for a location
    * Used during booking price calculation
    * Returns 0 if location not found (fail gracefully)
+   * ✅ CACHED (1 hour TTL)
    */
   async getDeliveryFee(locationId: string): Promise<number> {
     try {
-      const location = await this.getLocation(locationId);
-      return location?.deliveryFee ?? 0;
+      const validatedId = uuidSchema.safeParse(locationId);
+      if (!validatedId.success) {
+        return 0;
+      }
+
+      const data = await cachedApi.deliveryLocations.fee(validatedId.data);
+      return data?.fee ?? 0;
     } catch {
       // Fail gracefully - don't block booking flow
       return 0;
@@ -273,6 +259,7 @@ export const deliveryLocationService = {
   /**
    * Validate that a delivery location exists and is active
    * Used before creating a booking
+   * ✅ Uses cached getLocation()
    */
   async validateLocation(locationId: string): Promise<{
     valid: boolean;

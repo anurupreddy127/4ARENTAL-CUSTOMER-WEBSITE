@@ -1,5 +1,6 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
+// services/reviews/reviewService.ts (With Redis Caching)
 import { supabase } from "@/config/supabase";
+import { cachedApi } from "@/config/api";
 import { Review, ReviewStats, CreateReviewInput } from "@/types";
 import * as Sentry from "@sentry/react";
 
@@ -20,69 +21,54 @@ function logError(context: string, error: unknown): void {
 function mapReviewFromDB(data: Record<string, unknown>): Review {
   return {
     id: data.id as string,
-    vehicleId: data.vehicle_id as string,
-    userId: data.user_id as string,
-    reservationId: data.reservation_id as string | null,
+    vehicleId: (data.vehicle_id ?? data.vehicleId) as string,
+    userId: (data.user_id ?? data.userId) as string,
+    reservationId: (data.reservation_id ?? data.reservationId) as string | null,
     rating: data.rating as number,
     comment: data.comment as string | null,
-    reviewerName: data.reviewer_name as string,
-    isVerified: data.is_verified as boolean,
+    reviewerName: (data.reviewer_name ?? data.reviewerName) as string,
+    isVerified: (data.is_verified ?? data.isVerified) as boolean,
     createdAt: new Date(data.created_at as string),
     updatedAt: new Date(data.updated_at as string),
   };
 }
 
 // ============================================
-// SERVICE
+// SERVICE (WITH REDIS CACHING)
 // ============================================
 
 export const reviewService = {
   /**
    * Get reviews for a vehicle
+   * ✅ CACHED (5 min TTL)
    */
   async getVehicleReviews(
     vehicleId: string,
-    limit: number = 10
+    limit: number = 10,
   ): Promise<Review[]> {
     try {
-      const { data, error } = await supabase
-        .from("reviews")
-        .select("*")
-        .eq("vehicle_id", vehicleId)
-        .order("created_at", { ascending: false })
-        .limit(limit);
+      const data = await cachedApi.vehicles.reviews(vehicleId, limit, 0);
 
-      if (error) {
-        logError("getVehicleReviews", error);
-        throw new Error("Failed to load reviews");
+      if (!data || data.length === 0) {
+        return [];
       }
 
-      return (data || []).map(mapReviewFromDB);
+      return (data as Record<string, unknown>[]).map(mapReviewFromDB);
     } catch (error) {
       logError("getVehicleReviews", error);
-      throw error;
+      throw new Error("Failed to load reviews");
     }
   },
 
   /**
    * Get review statistics for a vehicle
+   * ✅ CACHED (5 min TTL) - Uses vehicle's cached average_rating and review_count
    */
   async getVehicleReviewStats(vehicleId: string): Promise<ReviewStats> {
     try {
-      const { data, error } = await supabase
-        .from("reviews")
-        .select("rating")
-        .eq("vehicle_id", vehicleId);
+      const stats = await cachedApi.vehicles.reviewStats(vehicleId);
 
-      if (error) {
-        logError("getVehicleReviewStats", error);
-        throw new Error("Failed to load review stats");
-      }
-
-      const reviews = data || [];
-      const totalReviews = reviews.length;
-
-      if (totalReviews === 0) {
+      if (!stats) {
         return {
           averageRating: null,
           totalReviews: 0,
@@ -90,32 +76,38 @@ export const reviewService = {
         };
       }
 
-      const sum = reviews.reduce((acc, r) => acc + r.rating, 0);
-      const averageRating = Math.round((sum / totalReviews) * 10) / 10;
+      // For rating distribution, we need to fetch actual reviews
+      // This is computed from the cached reviews
+      const reviews = await cachedApi.vehicles.reviews(vehicleId, 100, 0);
 
       const ratingDistribution = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
-      reviews.forEach((r) => {
-        const rating = r.rating as 1 | 2 | 3 | 4 | 5;
-        ratingDistribution[rating]++;
-      });
+      if (reviews && reviews.length > 0) {
+        (reviews as Record<string, unknown>[]).forEach((r) => {
+          const rating = r.rating as 1 | 2 | 3 | 4 | 5;
+          if (rating >= 1 && rating <= 5) {
+            ratingDistribution[rating]++;
+          }
+        });
+      }
 
       return {
-        averageRating,
-        totalReviews,
+        averageRating: stats.averageRating,
+        totalReviews: stats.reviewCount,
         ratingDistribution,
       };
     } catch (error) {
       logError("getVehicleReviewStats", error);
-      throw error;
+      throw new Error("Failed to load review stats");
     }
   },
 
   /**
    * Create a new review
+   * ❌ NOT CACHED - Write operation
    */
   async createReview(
     userId: string,
-    input: CreateReviewInput
+    input: CreateReviewInput,
   ): Promise<Review> {
     try {
       const { data, error } = await supabase
@@ -137,6 +129,7 @@ export const reviewService = {
         throw new Error("Failed to create review");
       }
 
+      // Note: Cache will be invalidated via webhook or TTL expiration
       return mapReviewFromDB(data);
     } catch (error) {
       logError("createReview", error);
@@ -146,10 +139,11 @@ export const reviewService = {
 
   /**
    * Check if user can review a vehicle (has completed rental)
+   * ❌ NOT CACHED - User-specific, must be real-time
    */
   async canUserReview(
     userId: string,
-    vehicleId: string
+    vehicleId: string,
   ): Promise<{ canReview: boolean; reservationId?: string }> {
     try {
       // Check if user has already reviewed this vehicle
@@ -179,7 +173,7 @@ export const reviewService = {
         canReview: true,
         reservationId: reservation?.id,
       };
-    } catch (error) {
+    } catch {
       // If no reservation found, user can still leave unverified review
       return { canReview: true };
     }

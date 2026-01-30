@@ -1,9 +1,11 @@
-// services/pricing/pricingService.ts
+// services/pricing/pricingService.ts (With Redis Caching for rates)
 /**
  * Service for calculating rental prices using database functions
+ * Note: Only getVehicleRates is cached - price calculations must be real-time
  */
 
 import { supabase } from "@/config/supabase";
+import { cachedApi } from "@/config/api";
 import type {
   PricingResult,
   BookingTotal,
@@ -160,6 +162,7 @@ export const pricingService = {
   /**
    * Calculate full pricing breakdown
    * Calls calculate_rental_price database function
+   * ❌ NOT CACHED - Dynamic calculation based on dates
    */
   async calculatePrice(
     vehicleId: string,
@@ -197,6 +200,7 @@ export const pricingService = {
   /**
    * Get simplified pricing (for quick lookups)
    * Calls get_rental_price database function
+   * ❌ NOT CACHED - Dynamic calculation based on dates
    */
   async getPrice(
     vehicleId: string,
@@ -249,6 +253,7 @@ export const pricingService = {
   /**
    * Calculate total booking cost including all fees
    * Calls calculate_booking_total database function
+   * ❌ NOT CACHED - Dynamic calculation based on dates and parameters
    */
   async calculateBookingTotal(
     vehicleId: string,
@@ -270,10 +275,6 @@ export const pricingService = {
         p_additional_drivers: additionalDrivers,
       });
 
-      // ADD THESE LINES FOR DEBUGGING
-      console.log("[DEBUG] Raw RPC response data:", data);
-      console.log("[DEBUG] Raw RPC response data[0]:", data?.[0]);
-
       if (error) {
         logError("calculateBookingTotal", error);
         throw new Error(error.message || "Failed to calculate booking total");
@@ -284,10 +285,6 @@ export const pricingService = {
       }
 
       const result = data[0] as RawBookingTotal;
-
-      // ADD THIS LINE FOR DEBUGGING
-      console.log("[DEBUG] Mapped result:", mapBookingTotal(result));
-
       logInfo(`Booking total calculated: $${result.total_due_now}`);
 
       return mapBookingTotal(result);
@@ -300,6 +297,7 @@ export const pricingService = {
   /**
    * Calculate extension pricing
    * Calls calculate_extension_price database function
+   * ❌ NOT CACHED - Dynamic calculation based on dates
    */
   async calculateExtensionPrice(
     vehicleId: string,
@@ -336,6 +334,7 @@ export const pricingService = {
 
   /**
    * Get vehicle rates
+   * ✅ CACHED (5 min TTL) - Static rate data
    */
   async getVehicleRates(vehicleId: string): Promise<{
     dailyRate: number;
@@ -346,30 +345,21 @@ export const pricingService = {
     logInfo(`Getting rates for vehicle ${vehicleId}`);
 
     try {
-      const { data, error } = await supabase
-        .from("vehicles")
-        .select("daily_rate, weekly_rate, monthly_rate, semester_rate")
-        .eq("id", vehicleId)
-        .single();
+      const rates = await cachedApi.vehicles.rates(vehicleId);
 
-      if (error) {
-        logError("getVehicleRates", error);
-        throw new Error("Failed to get vehicle rates");
-      }
-
-      if (!data) {
+      if (!rates) {
         throw new Error("Vehicle not found");
       }
 
       return {
-        dailyRate: data.daily_rate || 0,
-        weeklyRate: data.weekly_rate || 0,
-        monthlyRate: data.monthly_rate || 0,
-        semesterRate: data.semester_rate || 0,
+        dailyRate: rates.dailyRate || 0,
+        weeklyRate: rates.weeklyRate || 0,
+        monthlyRate: rates.monthlyRate || 0,
+        semesterRate: rates.semesterRate || 0,
       };
     } catch (error) {
       logError("getVehicleRates", error);
-      throw error;
+      throw new Error("Failed to get vehicle rates");
     }
   },
 };

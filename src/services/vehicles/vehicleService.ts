@@ -1,6 +1,6 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-// services/vehicleService.ts (CUSTOMER PORTAL - Production Ready)
+// services/vehicles/vehicleService.ts (CUSTOMER PORTAL - With Redis Caching)
 import { supabase } from "@/config/supabase";
+import { cachedApi } from "@/config/api";
 import { Vehicle } from "@/types";
 import { z } from "zod";
 import * as Sentry from "@sentry/react";
@@ -47,7 +47,7 @@ function mapVehicleFromDB(vehicle: Record<string, unknown>): Vehicle {
       | "inspection"
       | "sold"
       | "in-stock",
-    specifications: (vehicle.specifications as any) || {
+    specifications: (vehicle.specifications as Vehicle["specifications"]) || {
       seats: 0,
       transmission: "automatic",
       fuelType: "gasoline",
@@ -96,8 +96,6 @@ function mapVehicleFromDB(vehicle: Record<string, unknown>): Vehicle {
 
 /**
  * Safe error logging
- * - Development: Full error details in console
- * - Production: Send to Sentry, minimal console output
  */
 function logError(context: string, error: unknown): void {
   if (import.meta.env.DEV) {
@@ -111,7 +109,6 @@ function logError(context: string, error: unknown): void {
 
 /**
  * Creates a user-friendly error message
- * Never expose internal error details to users
  */
 function createUserError(context: string): Error {
   const messages: Record<string, string> = {
@@ -128,7 +125,7 @@ function createUserError(context: string): Error {
 }
 
 /**
- * Check if error is a user-friendly error (already processed)
+ * Check if error is a user-friendly error
  */
 function isUserError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("Unable to");
@@ -147,28 +144,19 @@ function isRateLimitError(error: unknown): boolean {
 }
 
 // ============================================
-// VEHICLE SERVICE (READ-ONLY FOR CUSTOMERS)
+// VEHICLE SERVICE (WITH REDIS CACHING)
 // ============================================
 export const vehicleService = {
   /**
    * Get all available vehicles for rental
-   * Public access - no authentication required
-   * Rate limit: 60 requests per minute
+   * ✅ CACHED (5 min TTL)
    */
   async getAllVehicles(): Promise<Vehicle[]> {
     try {
-      const { data, error } = await supabase
-        .from("vehicles")
-        .select("*")
-        .in("status", ["available", "reserved", "rented"])
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        logError("getAllVehicles", error);
-        throw createUserError("getAllVehicles");
-      }
-
-      return (data || []).map(mapVehicleFromDB);
+      const data = await cachedApi.vehicles.list();
+      return (data || []).map((v) =>
+        mapVehicleFromDB(v as Record<string, unknown>),
+      );
     } catch (error) {
       if (isRateLimitError(error) || isUserError(error)) {
         throw error;
@@ -180,26 +168,15 @@ export const vehicleService = {
 
   /**
    * Get vehicles filtered by category
-   * Public access - no authentication required
-   * Rate limit: 60 requests per minute
+   * ✅ CACHED (5 min TTL)
    */
   async getVehiclesByCategory(category: string): Promise<Vehicle[]> {
     try {
       const sanitizedCategory = categorySchema.parse(category);
-
-      const { data, error } = await supabase
-        .from("vehicles")
-        .select("*")
-        .in("status", ["available", "reserved", "rented"])
-        .eq("category", sanitizedCategory)
-        .order("created_at", { ascending: false });
-
-      if (error) {
-        logError("getVehiclesByCategory", error);
-        throw createUserError("getVehiclesByCategory");
-      }
-
-      return (data || []).map(mapVehicleFromDB);
+      const data = await cachedApi.vehicles.byCategory(sanitizedCategory);
+      return (data || []).map((v) =>
+        mapVehicleFromDB(v as Record<string, unknown>),
+      );
     } catch (error) {
       if (error instanceof z.ZodError) {
         logError("getVehiclesByCategory - invalid category", error);
@@ -215,28 +192,13 @@ export const vehicleService = {
 
   /**
    * Get single vehicle details by ID
-   * Public access - no authentication required
-   * Rate limit: 60 requests per minute
+   * ✅ CACHED (5 min TTL)
    */
   async getVehicle(id: string): Promise<Vehicle | null> {
     try {
       const validatedId = uuidSchema.parse(id);
-
-      const { data, error } = await supabase
-        .from("vehicles")
-        .select("*")
-        .eq("id", validatedId)
-        .single();
-
-      if (error) {
-        if (error.code === "PGRST116") {
-          return null;
-        }
-        logError("getVehicle", error);
-        throw createUserError("getVehicle");
-      }
-
-      return data ? mapVehicleFromDB(data) : null;
+      const data = await cachedApi.vehicles.single(validatedId);
+      return data ? mapVehicleFromDB(data as Record<string, unknown>) : null;
     } catch (error) {
       if (error instanceof z.ZodError) {
         logError("getVehicle - invalid ID format", error);
@@ -252,28 +214,12 @@ export const vehicleService = {
 
   /**
    * Get all available vehicle categories
-   * Public access - no authentication required
-   * Rate limit: 60 requests per minute
+   * ✅ CACHED (5 min TTL)
    */
   async getCategories(): Promise<string[]> {
     try {
-      const { data, error } = await supabase
-        .from("vehicles")
-        .select("category")
-        .in("status", ["available", "reserved", "rented"]);
-
-      if (error) {
-        logError("getCategories", error);
-        throw createUserError("getCategories");
-      }
-
-      const categories = [
-        ...new Set(
-          (data || []).map((v) => v.category as string).filter(Boolean),
-        ),
-      ].sort();
-
-      return categories;
+      const categories = await cachedApi.vehicles.categories();
+      return categories || [];
     } catch (error) {
       if (isRateLimitError(error) || isUserError(error)) {
         throw error;
@@ -285,28 +231,15 @@ export const vehicleService = {
 
   /**
    * Search vehicles by name, brand, or model
-   * Public access - no authentication required
-   * Rate limit: 30 requests per minute
+   * ✅ CACHED (5 min TTL per query)
    */
   async searchVehicles(query: string): Promise<Vehicle[]> {
     try {
       const sanitizedQuery = searchQuerySchema.parse(query);
-      const escapedQuery = sanitizedQuery.replace(/[%_]/g, "\\$&");
-
-      const { data, error } = await supabase
-        .from("vehicles")
-        .select("*")
-        .in("status", ["available", "reserved", "rented"])
-        .or(`name.ilike.%${escapedQuery}%,category.ilike.%${escapedQuery}%`)
-        .order("created_at", { ascending: false })
-        .limit(20);
-
-      if (error) {
-        logError("searchVehicles", error);
-        throw createUserError("searchVehicles");
-      }
-
-      return (data || []).map(mapVehicleFromDB);
+      const data = await cachedApi.vehicles.search(sanitizedQuery);
+      return (data || []).map((v) =>
+        mapVehicleFromDB(v as Record<string, unknown>),
+      );
     } catch (error) {
       if (error instanceof z.ZodError) {
         return [];
@@ -321,26 +254,15 @@ export const vehicleService = {
 
   /**
    * Get featured vehicles (for homepage)
-   * Public access - no authentication required
-   * Rate limit: 60 requests per minute
+   * ✅ CACHED (5 min TTL)
    */
   async getFeaturedVehicles(limit: number = 6): Promise<Vehicle[]> {
     try {
       const validatedLimit = limitSchema.parse(limit);
-
-      const { data, error } = await supabase
-        .from("vehicles")
-        .select("*")
-        .in("status", ["available", "reserved", "rented"])
-        .order("created_at", { ascending: false })
-        .limit(validatedLimit);
-
-      if (error) {
-        logError("getFeaturedVehicles", error);
-        throw createUserError("getFeaturedVehicles");
-      }
-
-      return (data || []).map(mapVehicleFromDB);
+      const data = await cachedApi.vehicles.featured(validatedLimit);
+      return (data || []).map((v) =>
+        mapVehicleFromDB(v as Record<string, unknown>),
+      );
     } catch (error) {
       if (error instanceof z.ZodError) {
         logError("getFeaturedVehicles - invalid limit, using default", error);
@@ -356,8 +278,7 @@ export const vehicleService = {
 
   /**
    * Check if a vehicle is available
-   * Useful before starting booking process
-   * Rate limit: 60 requests per minute
+   * ❌ NOT CACHED - Needs real-time accuracy for booking flow
    */
   async isVehicleAvailable(id: string): Promise<boolean> {
     try {
@@ -392,8 +313,7 @@ export const vehicleService = {
 
   /**
    * Get vehicles by price range
-   * Public access - no authentication required
-   * Rate limit: 60 requests per minute
+   * ✅ CACHED (5 min TTL)
    */
   async getVehiclesByPriceRange(
     minPrice: number,
@@ -407,20 +327,19 @@ export const vehicleService = {
         return [];
       }
 
-      const { data, error } = await supabase
-        .from("vehicles")
-        .select("*")
-        .in("status", ["available", "reserved", "rented"])
-        .gte("price", validatedMin)
-        .lte("price", validatedMax)
-        .order("price", { ascending: true });
+      // Use cached endpoint with query params
+      const data = await cachedApi.vehicles.list();
 
-      if (error) {
-        logError("getVehiclesByPriceRange", error);
-        throw createUserError("getAllVehicles");
-      }
+      // Filter by price range (filtering cached data)
+      const filtered = (data || []).filter((v) => {
+        const vehicle = v as Record<string, unknown>;
+        const price = Number(vehicle.price) || 0;
+        return price >= validatedMin && price <= validatedMax;
+      });
 
-      return (data || []).map(mapVehicleFromDB);
+      return filtered
+        .map((v) => mapVehicleFromDB(v as Record<string, unknown>))
+        .sort((a, b) => a.price - b.price);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return [];
@@ -435,30 +354,12 @@ export const vehicleService = {
 
   /**
    * Get vehicle count by category
-   * Useful for showing category filters with counts
-   * Rate limit: 60 requests per minute
+   * ✅ CACHED (5 min TTL)
    */
   async getCategoryCounts(): Promise<Record<string, number>> {
     try {
-      const { data, error } = await supabase
-        .from("vehicles")
-        .select("category")
-        .in("status", ["available", "reserved", "rented"]);
-
-      if (error) {
-        logError("getCategoryCounts", error);
-        throw createUserError("getCategories");
-      }
-
-      const counts: Record<string, number> = {};
-      (data || []).forEach((vehicle) => {
-        const category = vehicle.category as string;
-        if (category) {
-          counts[category] = (counts[category] || 0) + 1;
-        }
-      });
-
-      return counts;
+      const counts = await cachedApi.vehicles.categoryCounts();
+      return counts || {};
     } catch (error) {
       if (isRateLimitError(error) || isUserError(error)) {
         throw error;
@@ -470,37 +371,12 @@ export const vehicleService = {
 
   /**
    * Get minimum monthly pricing for each category
-   * Returns monthly starting prices per category
-   * Includes available, rented, and reserved vehicles for accurate pricing display
-   * Public access - no authentication required
+   * ✅ CACHED (5 min TTL)
    */
   async getCategoryPricing(): Promise<Record<string, number>> {
     try {
-      const { data, error } = await supabase
-        .from("vehicles")
-        .select("category, price, monthly_rate")
-        .in("status", ["available", "rented", "reserved"]);
-
-      if (error) {
-        logError("getCategoryPricing", error);
-        throw createUserError("getCategoryPricing");
-      }
-
-      const pricing: Record<string, number> = {};
-
-      (data || []).forEach((vehicle) => {
-        const category = vehicle.category as string;
-        const monthlyPrice =
-          Number(vehicle.monthly_rate) || Number(vehicle.price) || 0;
-
-        if (!category || monthlyPrice === 0) return;
-
-        if (!pricing[category] || monthlyPrice < pricing[category]) {
-          pricing[category] = monthlyPrice;
-        }
-      });
-
-      return pricing;
+      const pricing = await cachedApi.vehicles.categoryPricing();
+      return pricing || {};
     } catch (error) {
       if (isRateLimitError(error) || isUserError(error)) {
         throw error;

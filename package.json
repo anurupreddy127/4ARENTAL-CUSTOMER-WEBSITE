@@ -23,7 +23,7 @@
     "@fontsource/space-grotesk": "^5.2.10",
     "@radix-ui/react-avatar": "^1.1.11",
     "@sentry/react": "^10.29.0",
-    "@supabase/supabase-js": "^2.57.4",
+    "@supabase/supabase-js": "^2.93.3",
     "clsx": "^2.1.1",
     "framer-motion": "^12.23.26",
     "js-cookie": "^3.0.5",
