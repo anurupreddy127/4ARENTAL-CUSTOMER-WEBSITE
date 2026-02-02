@@ -14,6 +14,7 @@ import type {
   PricingMethod,
 } from "@/types";
 import * as Sentry from "@sentry/react";
+import { toBusinessDateString } from "@/utils/dates";
 
 // ============================================
 // TYPES
@@ -96,7 +97,7 @@ function formatDate(date: Date | string): string {
     // If already a string, ensure it's in correct format
     return date.split("T")[0];
   }
-  return date.toISOString().split("T")[0];
+  return toBusinessDateString(date);
 }
 
 /**

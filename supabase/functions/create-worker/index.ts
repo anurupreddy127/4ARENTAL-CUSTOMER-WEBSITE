@@ -1,6 +1,11 @@
 // supabase/functions/create-worker/index.ts
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { randomBytes } from "node:crypto";
+import {
+  checkRateLimit,
+  rateLimitResponse,
+  rateLimitHeaders,
+} from "../_shared/ratelimit.ts";
 
 // ============================================
 // ENVIRONMENT VARIABLES
@@ -8,7 +13,8 @@ import { randomBytes } from "node:crypto";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
-const WORKERS_PORTAL_URL = Deno.env.get("WORKERS_PORTAL_URL") || "https://workers.4arentals.com";
+const WORKERS_PORTAL_URL =
+  Deno.env.get("WORKERS_PORTAL_URL") || "https://workers.4arentals.com";
 
 // ============================================
 // ALLOWED ORIGINS (Production)
@@ -25,11 +31,14 @@ const ALLOWED_ORIGINS = [
 // ============================================
 function getCorsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin") || "";
-  const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  const allowedOrigin = ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : ALLOWED_ORIGINS[0];
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 }
@@ -44,40 +53,12 @@ interface CreateWorkerRequest {
   role: "admin" | "manager" | "worker";
 }
 
-interface RateLimitEntry {
-  count: number;
-  windowStart: number;
-}
-
-// ============================================
-// RATE LIMITING (In-memory sliding window)
-// ============================================
-const rateLimitMap = new Map<string, RateLimitEntry>();
-const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const MAX_REQUESTS_PER_HOUR = 10;
-
-function checkRateLimit(userId: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(userId);
-
-  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
-    rateLimitMap.set(userId, { count: 1, windowStart: now });
-    return true;
-  }
-
-  if (entry.count >= MAX_REQUESTS_PER_HOUR) {
-    return false;
-  }
-
-  entry.count++;
-  return true;
-}
-
 // ============================================
 // UTILITY FUNCTIONS
 // ============================================
 function generateSecurePassword(length: number = 12): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=";
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=";
   const bytes = randomBytes(length);
   let password = "";
 
@@ -136,7 +117,7 @@ async function logAuditEvent(
     oldData?: Record<string, unknown>;
     newData?: Record<string, unknown>;
     req: Request;
-  }
+  },
 ) {
   try {
     await supabaseAdmin.from("audit_logs").insert({
@@ -167,7 +148,7 @@ async function sendWelcomeEmail(
   personalEmail: string,
   professionalEmail: string,
   fullName: string,
-  temporaryPassword: string
+  temporaryPassword: string,
 ): Promise<void> {
   if (!RESEND_API_KEY) {
     console.warn("RESEND_API_KEY not configured, skipping email");
@@ -263,7 +244,10 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response(
       JSON.stringify({ success: false, error: "Method not allowed" }),
-      { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 405,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
     );
   }
 
@@ -278,18 +262,28 @@ Deno.serve(async (req: Request) => {
       await logAuditEvent(supabaseAdmin, {
         action: "CREATE_WORKER_FAILED",
         resourceType: "worker_account",
-        description: "Worker creation attempt without valid authorization header",
+        description:
+          "Worker creation attempt without valid authorization header",
         req,
       });
 
       return new Response(
-        JSON.stringify({ success: false, error: "Authentication required. Please log in." }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          success: false,
+          error: "Authentication required. Please log in.",
+        }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
+    const {
+      data: { user },
+      error: userError,
+    } = await supabaseAdmin.auth.getUser(token);
 
     if (userError || !user) {
       await logAuditEvent(supabaseAdmin, {
@@ -300,8 +294,14 @@ Deno.serve(async (req: Request) => {
       });
 
       return new Response(
-        JSON.stringify({ success: false, error: "Invalid or expired session. Please log in again." }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          success: false,
+          error: "Invalid or expired session. Please log in again.",
+        }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -323,8 +323,14 @@ Deno.serve(async (req: Request) => {
       });
 
       return new Response(
-        JSON.stringify({ success: false, error: "Worker account not found. Please contact support." }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          success: false,
+          error: "Worker account not found. Please contact support.",
+        }),
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -340,8 +346,14 @@ Deno.serve(async (req: Request) => {
       });
 
       return new Response(
-        JSON.stringify({ success: false, error: "Your account is inactive. Please contact an administrator." }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          success: false,
+          error: "Your account is inactive. Please contact an administrator.",
+        }),
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -359,16 +371,24 @@ Deno.serve(async (req: Request) => {
       return new Response(
         JSON.stringify({
           success: false,
-          error: "You don't have permission to create workers. Only admins and managers can create workers.",
+          error:
+            "You don't have permission to create workers. Only admins and managers can create workers.",
         }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // ============================================
     // 3. RATE LIMITING
     // ============================================
-    if (!checkRateLimit(workerAccount.id)) {
+    const rateLimitResult = await checkRateLimit(
+      "WORKER_CREATE",
+      workerAccount.id,
+    );
+    if (!rateLimitResult.success) {
       await logAuditEvent(supabaseAdmin, {
         workerId: workerAccount.id,
         workerEmail: workerAccount.professional_email,
@@ -379,12 +399,10 @@ Deno.serve(async (req: Request) => {
         req,
       });
 
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: "Rate limit exceeded. You can create a maximum of 10 workers per hour. Please try again later.",
-        }),
-        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      return rateLimitResponse(
+        rateLimitResult,
+        corsHeaders,
+        "Rate limit exceeded. You can create a maximum of 10 workers per hour. Please try again later.",
       );
     }
 
@@ -397,7 +415,10 @@ Deno.serve(async (req: Request) => {
     } catch {
       return new Response(
         JSON.stringify({ success: false, error: "Invalid JSON body" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -408,9 +429,13 @@ Deno.serve(async (req: Request) => {
       return new Response(
         JSON.stringify({
           success: false,
-          error: "Missing required fields. Please provide: personal email, professional email, full name, and role.",
+          error:
+            "Missing required fields. Please provide: personal email, professional email, full name, and role.",
         }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -419,31 +444,54 @@ Deno.serve(async (req: Request) => {
     if (!nameValidation.valid) {
       return new Response(
         JSON.stringify({ success: false, error: nameValidation.error }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Validate email formats
     if (!validateEmail(personal_email)) {
       return new Response(
-        JSON.stringify({ success: false, error: "Invalid personal email format. Please enter a valid email address." }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          success: false,
+          error:
+            "Invalid personal email format. Please enter a valid email address.",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     if (!validateEmail(professional_email)) {
       return new Response(
-        JSON.stringify({ success: false, error: "Invalid professional email format. Please enter a valid email address." }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          success: false,
+          error:
+            "Invalid professional email format. Please enter a valid email address.",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Validate role
     const validRoles = ["admin", "worker", "manager"] as const;
-    if (!validRoles.includes(role as typeof validRoles[number])) {
+    if (!validRoles.includes(role as (typeof validRoles)[number])) {
       return new Response(
-        JSON.stringify({ success: false, error: "Invalid role. Role must be: admin, manager, or worker." }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          success: false,
+          error: "Invalid role. Role must be: admin, manager, or worker.",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -463,9 +511,13 @@ Deno.serve(async (req: Request) => {
       return new Response(
         JSON.stringify({
           success: false,
-          error: "Managers can only create worker accounts. To create a manager or admin, please contact an administrator.",
+          error:
+            "Managers can only create worker accounts. To create a manager or admin, please contact an administrator.",
         }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -484,7 +536,10 @@ Deno.serve(async (req: Request) => {
           success: false,
           error: `A worker account with this email already exists. Please use a different email address.`,
         }),
-        { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 409,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -496,11 +551,12 @@ Deno.serve(async (req: Request) => {
     // ============================================
     // 7. CREATE AUTH USER
     // ============================================
-    const { data: newUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
-      email: professional_email.toLowerCase(),
-      password: temporaryPassword,
-      email_confirm: true,
-    });
+    const { data: newUser, error: createError } =
+      await supabaseAdmin.auth.admin.createUser({
+        email: professional_email.toLowerCase(),
+        password: temporaryPassword,
+        email_confirm: true,
+      });
 
     if (createError) {
       console.error("Auth user creation error:", createError);
@@ -511,13 +567,22 @@ Deno.serve(async (req: Request) => {
             success: false,
             error: `This email is already registered in the authentication system. Please use a different email.`,
           }),
-          { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          {
+            status: 409,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          },
         );
       }
 
       return new Response(
-        JSON.stringify({ success: false, error: "Failed to create authentication account. Please try again." }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          success: false,
+          error: "Failed to create authentication account. Please try again.",
+        }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -550,7 +615,10 @@ Deno.serve(async (req: Request) => {
           success: false,
           error: "Failed to create worker account. Please try again.",
         }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -578,7 +646,12 @@ Deno.serve(async (req: Request) => {
     // 10. SEND WELCOME EMAIL
     // ============================================
     try {
-      await sendWelcomeEmail(personal_email, professional_email, full_name.trim(), temporaryPassword);
+      await sendWelcomeEmail(
+        personal_email,
+        professional_email,
+        full_name.trim(),
+        temporaryPassword,
+      );
     } catch (emailError) {
       console.error("Failed to send welcome email:", emailError);
       // Don't fail the entire operation if email fails
@@ -597,9 +670,17 @@ Deno.serve(async (req: Request) => {
           role: newWorker.role,
         },
         temporary_password: temporaryPassword,
-        message: "Worker account created successfully. Welcome email has been sent.",
+        message:
+          "Worker account created successfully. Welcome email has been sent.",
       }),
-      { status: 201, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 201,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          ...rateLimitHeaders(rateLimitResult),
+        },
+      },
     );
   } catch (error) {
     console.error("Unexpected error in create-worker:", error);
@@ -607,9 +688,13 @@ Deno.serve(async (req: Request) => {
     return new Response(
       JSON.stringify({
         success: false,
-        error: "An unexpected error occurred. Please try again or contact support.",
+        error:
+          "An unexpected error occurred. Please try again or contact support.",
       }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
     );
   }
 });

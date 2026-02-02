@@ -1,6 +1,11 @@
 // supabase/functions/create-checkout-session/index.ts
 import { createClient } from "npm:@supabase/supabase-js@2";
 import Stripe from "npm:stripe@14.21.0";
+import {
+  checkRateLimit,
+  rateLimitResponse,
+  rateLimitHeaders,
+} from "../_shared/ratelimit.ts";
 
 // ============================================
 // ENVIRONMENT VARIABLES
@@ -8,7 +13,8 @@ import Stripe from "npm:stripe@14.21.0";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY")!;
-const CUSTOMER_PORTAL_URL = Deno.env.get("CUSTOMER_PORTAL_URL") || "https://4arentals.com";
+const CUSTOMER_PORTAL_URL =
+  Deno.env.get("CUSTOMER_PORTAL_URL") || "https://4arentals.com";
 
 // ============================================
 // ALLOWED ORIGINS
@@ -25,49 +31,24 @@ const ALLOWED_ORIGINS = [
 // ============================================
 function getCorsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin") || "";
-  const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  const allowedOrigin = ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : ALLOWED_ORIGINS[0];
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, baggage, sentry-trace",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type, baggage, sentry-trace",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
-}
-
-// ============================================
-// RATE LIMITING
-// ============================================
-interface RateLimitEntry {
-  count: number;
-  windowStart: number;
-}
-
-const rateLimitMap = new Map<string, RateLimitEntry>();
-const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const MAX_REQUESTS_PER_HOUR = 10;
-
-function checkRateLimit(userId: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(userId);
-
-  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
-    rateLimitMap.set(userId, { count: 1, windowStart: now });
-    return true;
-  }
-
-  if (entry.count >= MAX_REQUESTS_PER_HOUR) {
-    return false;
-  }
-
-  entry.count++;
-  return true;
 }
 
 // ============================================
 // VALIDATION HELPERS
 // ============================================
 function isValidUUID(str: string): boolean {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   return uuidRegex.test(str);
 }
 
@@ -193,14 +174,16 @@ Deno.serve(async (req: Request) => {
 
   // Only allow POST
   if (req.method !== "POST") {
-    return new Response(
-      JSON.stringify({ error: "Method not allowed" }),
-      { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-  const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-11-20.acacia" });
+  const stripe = new Stripe(STRIPE_SECRET_KEY, {
+    apiVersion: "2024-11-20.acacia",
+  });
 
   let createdBookingId: string | null = null;
   let createdPrimaryDriverId: string | null = null;
@@ -213,17 +196,28 @@ Deno.serve(async (req: Request) => {
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return new Response(
         JSON.stringify({ error: "Authentication required" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseAdmin.auth.getUser(token);
 
     if (authError || !user) {
       return new Response(
-        JSON.stringify({ error: "Invalid or expired session. Please log in again." }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: "Invalid or expired session. Please log in again.",
+        }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -232,10 +226,12 @@ Deno.serve(async (req: Request) => {
     // ============================================
     // 2. RATE LIMITING
     // ============================================
-    if (!checkRateLimit(user.id)) {
-      return new Response(
-        JSON.stringify({ error: "Too many booking attempts. Please try again later." }),
-        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    const rateLimitResult = await checkRateLimit("PAYMENT_INITIATE", user.id);
+    if (!rateLimitResult.success) {
+      return rateLimitResponse(
+        rateLimitResult,
+        corsHeaders,
+        "Too many booking attempts. Please try again later.",
       );
     }
 
@@ -246,10 +242,10 @@ Deno.serve(async (req: Request) => {
     try {
       payload = await req.json();
     } catch {
-      return new Response(
-        JSON.stringify({ error: "Invalid request body" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid request body" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const {
@@ -268,17 +264,25 @@ Deno.serve(async (req: Request) => {
 
     // Validate vehicleId
     if (!vehicleId || !isValidUUID(vehicleId)) {
-      return new Response(
-        JSON.stringify({ error: "Invalid vehicle ID" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid vehicle ID" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // Validate dates
-    if (!pickupDate || !returnDate || !isValidDate(pickupDate) || !isValidDate(returnDate)) {
+    if (
+      !pickupDate ||
+      !returnDate ||
+      !isValidDate(pickupDate) ||
+      !isValidDate(returnDate)
+    ) {
       return new Response(
         JSON.stringify({ error: "Invalid pickup or return date" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -290,30 +294,43 @@ Deno.serve(async (req: Request) => {
     if (parsedPickupDate < today) {
       return new Response(
         JSON.stringify({ error: "Pickup date cannot be in the past" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     if (parsedReturnDate <= parsedPickupDate) {
       return new Response(
         JSON.stringify({ error: "Return date must be after pickup date" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Validate pickup type
     if (!["store", "delivery"].includes(pickupType)) {
-      return new Response(
-        JSON.stringify({ error: "Invalid pickup type" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid pickup type" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // Validate delivery location if delivery
-    if (pickupType === "delivery" && deliveryLocationId && !isValidUUID(deliveryLocationId)) {
+    if (
+      pickupType === "delivery" &&
+      deliveryLocationId &&
+      !isValidUUID(deliveryLocationId)
+    ) {
       return new Response(
         JSON.stringify({ error: "Invalid delivery location" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -321,28 +338,40 @@ Deno.serve(async (req: Request) => {
     if (!primaryDriver) {
       return new Response(
         JSON.stringify({ error: "Primary driver information is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     if (!primaryDriver.firstName || !primaryDriver.lastName) {
       return new Response(
         JSON.stringify({ error: "Primary driver name is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     if (!primaryDriver.email || !isValidEmail(primaryDriver.email)) {
       return new Response(
         JSON.stringify({ error: "Valid primary driver email is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     if (!primaryDriver.phone || !isValidPhone(primaryDriver.phone)) {
       return new Response(
         JSON.stringify({ error: "Valid primary driver phone is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -350,7 +379,10 @@ Deno.serve(async (req: Request) => {
     if (additionalDrivers && additionalDrivers.length > 3) {
       return new Response(
         JSON.stringify({ error: "Maximum 3 additional drivers allowed" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -364,16 +396,19 @@ Deno.serve(async (req: Request) => {
       .single();
 
     if (vehicleError || !vehicle) {
-      return new Response(
-        JSON.stringify({ error: "Vehicle not found" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Vehicle not found" }), {
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     if (vehicle.status !== "available") {
       return new Response(
         JSON.stringify({ error: "Vehicle is not available for booking" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -387,8 +422,13 @@ Deno.serve(async (req: Request) => {
 
     if (conflicts && conflicts.length > 0) {
       return new Response(
-        JSON.stringify({ error: "Vehicle is not available for the selected dates" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: "Vehicle is not available for the selected dates",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -405,14 +445,17 @@ Deno.serve(async (req: Request) => {
         p_is_student: isStudentBooking || false,
         p_delivery_fee: 0, // Will calculate separately
         p_additional_drivers: additionalDrivers?.length || 0,
-      }
+      },
     );
 
     if (pricingError || !pricingData || pricingData.length === 0) {
       console.error("Pricing calculation error:", pricingError);
       return new Response(
         JSON.stringify({ error: "Failed to calculate booking price" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -438,14 +481,15 @@ Deno.serve(async (req: Request) => {
     const rentalAmount = pricing.rental_amount;
     const securityDeposit = pricing.security_deposit;
     const additionalDriverFee = pricing.additional_driver_fee;
-    const totalAmount = rentalAmount + securityDeposit + deliveryFee + additionalDriverFee;
+    const totalAmount =
+      rentalAmount + securityDeposit + deliveryFee + additionalDriverFee;
 
     // Minimum charge validation
     if (totalAmount < 1) {
-      return new Response(
-        JSON.stringify({ error: "Invalid booking amount" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid booking amount" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     console.log("💰 Final pricing:", {
@@ -505,36 +549,45 @@ Deno.serve(async (req: Request) => {
       console.error("Booking creation error:", bookingError);
       return new Response(
         JSON.stringify({ error: "Failed to create booking" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     createdBookingId = booking.id;
-    console.log("✅ Booking created:", booking.id, "Number:", booking.booking_number);
+    console.log(
+      "✅ Booking created:",
+      booking.id,
+      "Number:",
+      booking.booking_number,
+    );
 
     // ============================================
     // 7. CREATE PRIMARY DRIVER RECORD
     // ============================================
-    const { data: primaryDriverRecord, error: primaryDriverError } = await supabaseAdmin
-      .from("primary_drivers")
-      .insert({
-        booking_id: booking.id,
-        user_id: primaryDriver.isAccountHolder ? user.id : null,
-        first_name: sanitizeString(primaryDriver.firstName),
-        last_name: sanitizeString(primaryDriver.lastName),
-        email: primaryDriver.email.toLowerCase(),
-        phone: primaryDriver.phone,
-        drivers_license: sanitizeString(primaryDriver.driversLicenseNumber),
-        date_of_birth: primaryDriver.dateOfBirth,
-        street_address: sanitizeString(primaryDriver.streetAddress),
-        city: sanitizeString(primaryDriver.city),
-        state: sanitizeString(primaryDriver.state),
-        zip_code: sanitizeString(primaryDriver.zipCode),
-        is_account_holder: primaryDriver.isAccountHolder || false,
-        is_verified: false,
-      })
-      .select()
-      .single();
+    const { data: primaryDriverRecord, error: primaryDriverError } =
+      await supabaseAdmin
+        .from("primary_drivers")
+        .insert({
+          booking_id: booking.id,
+          user_id: primaryDriver.isAccountHolder ? user.id : null,
+          first_name: sanitizeString(primaryDriver.firstName),
+          last_name: sanitizeString(primaryDriver.lastName),
+          email: primaryDriver.email.toLowerCase(),
+          phone: primaryDriver.phone,
+          drivers_license: sanitizeString(primaryDriver.driversLicenseNumber),
+          date_of_birth: primaryDriver.dateOfBirth,
+          street_address: sanitizeString(primaryDriver.streetAddress),
+          city: sanitizeString(primaryDriver.city),
+          state: sanitizeString(primaryDriver.state),
+          zip_code: sanitizeString(primaryDriver.zipCode),
+          is_account_holder: primaryDriver.isAccountHolder || false,
+          is_verified: false,
+        })
+        .select()
+        .single();
 
     if (primaryDriverError) {
       console.error("Primary driver creation error:", primaryDriverError);
@@ -542,7 +595,10 @@ Deno.serve(async (req: Request) => {
       await supabaseAdmin.from("bookings").delete().eq("id", booking.id);
       return new Response(
         JSON.stringify({ error: "Failed to save driver information" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -573,13 +629,24 @@ Deno.serve(async (req: Request) => {
         .insert(additionalDriverRecords);
 
       if (additionalDriversError) {
-        console.error("Additional drivers creation error:", additionalDriversError);
+        console.error(
+          "Additional drivers creation error:",
+          additionalDriversError,
+        );
         // Rollback
-        await supabaseAdmin.from("primary_drivers").delete().eq("id", primaryDriverRecord.id);
+        await supabaseAdmin
+          .from("primary_drivers")
+          .delete()
+          .eq("id", primaryDriverRecord.id);
         await supabaseAdmin.from("bookings").delete().eq("id", booking.id);
         return new Response(
-          JSON.stringify({ error: "Failed to save additional driver information" }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          JSON.stringify({
+            error: "Failed to save additional driver information",
+          }),
+          {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          },
         );
       }
     }
@@ -590,19 +657,27 @@ Deno.serve(async (req: Request) => {
     const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [];
 
     const rentalTypeEmoji = getRentalTypeEmoji(pricing.rental_type);
-    const durationText = formatRentalType(pricing.rental_type, pricing.rental_days);
-    const pickupLocationText = pickupType === "delivery" 
-      ? "Delivery to your location" 
-      : `Pick up at ${pickupLocation}`;
+    const durationText = formatRentalType(
+      pricing.rental_type,
+      pricing.rental_days,
+    );
+    const pickupLocationText =
+      pickupType === "delivery"
+        ? "Delivery to your location"
+        : `Pick up at ${pickupLocation}`;
 
     const rentalDescription = [
       `${rentalTypeEmoji} ${durationText}`,
       `📅 ${formatDate(pickupDate)} - ${formatDate(returnDate)}`,
       `📍 ${pickupLocationText}`,
       isStudentBooking ? "🎓 Student pricing applied" : "",
-    ].filter(Boolean).join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
 
-    const vehicleImage = Array.isArray(vehicle.image) ? vehicle.image[0] : vehicle.image;
+    const vehicleImage = Array.isArray(vehicle.image)
+      ? vehicle.image[0]
+      : vehicle.image;
 
     lineItems.push({
       price_data: {
@@ -610,7 +685,10 @@ Deno.serve(async (req: Request) => {
         product_data: {
           name: `${vehicle.name} - ${pricing.rental_type === "semester" ? "Semester" : pricing.rental_type === "monthly" ? "Monthly" : "Weekly"} Rental`,
           description: rentalDescription,
-          images: vehicleImage && vehicleImage.startsWith("http") ? [vehicleImage] : [],
+          images:
+            vehicleImage && vehicleImage.startsWith("http")
+              ? [vehicleImage]
+              : [],
         },
         unit_amount: Math.round(rentalAmount * 100),
       },
@@ -637,7 +715,9 @@ Deno.serve(async (req: Request) => {
           currency: "usd",
           product_data: {
             name: "🚚 Delivery Fee",
-            description: deliveryTimeSlot ? `Delivery at ${deliveryTimeSlot}` : "Vehicle delivery",
+            description: deliveryTimeSlot
+              ? `Delivery at ${deliveryTimeSlot}`
+              : "Vehicle delivery",
           },
           unit_amount: Math.round(deliveryFee * 100),
         },
@@ -645,7 +725,11 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    if (additionalDriverFee > 0 && additionalDrivers && additionalDrivers.length > 0) {
+    if (
+      additionalDriverFee > 0 &&
+      additionalDrivers &&
+      additionalDrivers.length > 0
+    ) {
       lineItems.push({
         price_data: {
           currency: "usd",
@@ -720,23 +804,37 @@ Deno.serve(async (req: Request) => {
         bookingId: booking.id,
         bookingNumber: booking.booking_number,
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          ...rateLimitHeaders(rateLimitResult),
+        },
+      },
     );
-
   } catch (error) {
     console.error("Checkout error:", error);
 
     // Cleanup on error
     if (createdPrimaryDriverId) {
-      await supabaseAdmin.from("primary_drivers").delete().eq("id", createdPrimaryDriverId);
+      await supabaseAdmin
+        .from("primary_drivers")
+        .delete()
+        .eq("id", createdPrimaryDriverId);
     }
     if (createdBookingId) {
       await supabaseAdmin.from("bookings").delete().eq("id", createdBookingId);
     }
 
     return new Response(
-      JSON.stringify({ error: "Failed to create checkout session. Please try again." }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      JSON.stringify({
+        error: "Failed to create checkout session. Please try again.",
+      }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
     );
   }
 });

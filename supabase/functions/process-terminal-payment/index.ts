@@ -1,6 +1,11 @@
 // supabase/functions/process-terminal-payment/index.ts
 import Stripe from "npm:stripe@14";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  checkRateLimit,
+  rateLimitResponse,
+  rateLimitHeaders,
+} from "../_shared/ratelimit.ts";
 
 // ============================================
 // ENVIRONMENT VARIABLES
@@ -25,11 +30,14 @@ const ALLOWED_ORIGINS = [
 // ============================================
 function getCorsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin") || "";
-  const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  const allowedOrigin = ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : ALLOWED_ORIGINS[0];
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 }
@@ -38,7 +46,8 @@ function getCorsHeaders(req: Request): Record<string, string> {
 // VALIDATION HELPERS
 // ============================================
 function isValidUUID(str: string): boolean {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   return uuidRegex.test(str);
 }
 
@@ -63,14 +72,16 @@ Deno.serve(async (req: Request) => {
 
   // Only allow POST
   if (req.method !== "POST") {
-    return new Response(
-      JSON.stringify({ error: "Method not allowed" }),
-      { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-  const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-11-20.acacia" });
+  const stripe = new Stripe(STRIPE_SECRET_KEY, {
+    apiVersion: "2024-11-20.acacia",
+  });
 
   try {
     // ============================================
@@ -80,17 +91,26 @@ Deno.serve(async (req: Request) => {
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return new Response(
         JSON.stringify({ error: "Authentication required" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseAdmin.auth.getUser(token);
 
     if (authError || !user) {
       return new Response(
         JSON.stringify({ error: "Invalid or expired session" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -104,23 +124,43 @@ Deno.serve(async (req: Request) => {
     if (workerError || !workerAccount || !workerAccount.is_active) {
       return new Response(
         JSON.stringify({ error: "Unauthorized - Worker account required" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
-    console.log(`📟 Worker ${workerAccount.full_name} processing terminal payment`);
+    console.log(
+      `📟 Worker ${workerAccount.full_name} processing terminal payment`,
+    );
 
     // ============================================
-    // 2. PARSE & VALIDATE REQUEST
+    // 2. RATE LIMITING
+    // ============================================
+    const rateLimitResult = await checkRateLimit(
+      "POS_TRANSACTION",
+      workerAccount.id,
+    );
+    if (!rateLimitResult.success) {
+      return rateLimitResponse(
+        rateLimitResult,
+        corsHeaders,
+        "Too many POS transactions. Please wait before processing more payments.",
+      );
+    }
+
+    // ============================================
+    // 3. PARSE & VALIDATE REQUEST
     // ============================================
     let payload: ProcessTerminalPaymentRequest;
     try {
       payload = await req.json();
     } catch {
-      return new Response(
-        JSON.stringify({ error: "Invalid request body" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid request body" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const { paymentIntentId, readerId } = payload;
@@ -129,20 +169,23 @@ Deno.serve(async (req: Request) => {
     if (!paymentIntentId || !paymentIntentId.startsWith("pi_")) {
       return new Response(
         JSON.stringify({ error: "Invalid payment intent ID" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Validate reader ID
     if (!readerId || !isValidUUID(readerId)) {
-      return new Response(
-        JSON.stringify({ error: "Invalid reader ID" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid reader ID" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // ============================================
-    // 3. GET READER FROM DATABASE
+    // 4. GET READER FROM DATABASE
     // ============================================
     const { data: reader, error: readerError } = await supabaseAdmin
       .from("terminal_readers")
@@ -152,39 +195,49 @@ Deno.serve(async (req: Request) => {
 
     if (readerError || !reader) {
       console.error("❌ Reader not found:", readerError);
-      return new Response(
-        JSON.stringify({ error: "Reader not found" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Reader not found" }), {
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     if (reader.status === "maintenance") {
       return new Response(
         JSON.stringify({ error: "Reader is under maintenance" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
-    console.log(`📟 Using reader: ${reader.label} (${reader.stripe_reader_id})`);
+    console.log(
+      `📟 Using reader: ${reader.label} (${reader.stripe_reader_id})`,
+    );
 
     // ============================================
-    // 4. VERIFY PAYMENT INTENT STATUS
+    // 5. VERIFY PAYMENT INTENT STATUS
     // ============================================
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
 
     if (paymentIntent.status !== "requires_payment_method") {
-      console.error(`❌ Invalid payment intent status: ${paymentIntent.status}`);
+      console.error(
+        `❌ Invalid payment intent status: ${paymentIntent.status}`,
+      );
       return new Response(
-        JSON.stringify({ 
+        JSON.stringify({
           error: "Payment intent is not ready for processing",
           currentStatus: paymentIntent.status,
         }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // ============================================
-    // 5. PROCESS PAYMENT ON READER
+    // 6. PROCESS PAYMENT ON READER
     // ============================================
     console.log(`🔄 Sending payment to reader...`);
 
@@ -193,13 +246,15 @@ Deno.serve(async (req: Request) => {
       reader.stripe_reader_id,
       {
         payment_intent: paymentIntentId,
-      }
+      },
     );
 
-    console.log(`✅ Payment sent to reader, action: ${readerAction.action?.type}`);
+    console.log(
+      `✅ Payment sent to reader, action: ${readerAction.action?.type}`,
+    );
 
     // ============================================
-    // 6. UPDATE POS TRANSACTION STATUS
+    // 7. UPDATE POS TRANSACTION STATUS
     // ============================================
     const { error: updateError } = await supabaseAdmin
       .from("pos_transactions")
@@ -217,7 +272,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // ============================================
-    // 7. UPDATE READER LAST SEEN
+    // 8. UPDATE READER LAST SEEN
     // ============================================
     await supabaseAdmin
       .from("terminal_readers")
@@ -228,7 +283,7 @@ Deno.serve(async (req: Request) => {
       .eq("id", reader.id);
 
     // ============================================
-    // 8. RETURN RESPONSE
+    // 9. RETURN RESPONSE
     // ============================================
     return new Response(
       JSON.stringify({
@@ -240,9 +295,15 @@ Deno.serve(async (req: Request) => {
         actionStatus: readerAction.action?.status,
         message: "Payment is being processed on the reader",
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          ...rateLimitHeaders(rateLimitResult),
+        },
+      },
     );
-
   } catch (error) {
     console.error("❌ Process terminal payment error:", error);
 
@@ -251,37 +312,49 @@ Deno.serve(async (req: Request) => {
       // Handle reader-specific errors
       if (error.code === "terminal_reader_offline") {
         return new Response(
-          JSON.stringify({ 
+          JSON.stringify({
             error: "Reader is offline",
             code: "reader_offline",
           }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          },
         );
       }
 
       if (error.code === "terminal_reader_busy") {
         return new Response(
-          JSON.stringify({ 
+          JSON.stringify({
             error: "Reader is busy with another transaction",
             code: "reader_busy",
           }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          },
         );
       }
 
       return new Response(
-        JSON.stringify({ 
+        JSON.stringify({
           error: "Terminal processing error",
           details: error.message,
           code: error.code,
         }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     return new Response(
       JSON.stringify({ error: "Failed to process payment on reader" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
     );
   }
 });

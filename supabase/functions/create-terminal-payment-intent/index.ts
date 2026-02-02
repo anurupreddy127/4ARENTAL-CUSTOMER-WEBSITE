@@ -1,6 +1,11 @@
 // supabase/functions/create-terminal-payment-intent/index.ts
 import Stripe from "npm:stripe@14";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  checkRateLimit,
+  rateLimitResponse,
+  rateLimitHeaders,
+} from "../_shared/ratelimit.ts";
 
 // ============================================
 // ENVIRONMENT VARIABLES
@@ -25,11 +30,14 @@ const ALLOWED_ORIGINS = [
 // ============================================
 function getCorsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin") || "";
-  const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  const allowedOrigin = ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : ALLOWED_ORIGINS[0];
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 }
@@ -38,7 +46,8 @@ function getCorsHeaders(req: Request): Record<string, string> {
 // VALIDATION HELPERS
 // ============================================
 function isValidUUID(str: string): boolean {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   return uuidRegex.test(str);
 }
 
@@ -67,14 +76,16 @@ Deno.serve(async (req: Request) => {
 
   // Only allow POST
   if (req.method !== "POST") {
-    return new Response(
-      JSON.stringify({ error: "Method not allowed" }),
-      { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-  const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-11-20.acacia" });
+  const stripe = new Stripe(STRIPE_SECRET_KEY, {
+    apiVersion: "2024-11-20.acacia",
+  });
 
   try {
     // ============================================
@@ -84,17 +95,26 @@ Deno.serve(async (req: Request) => {
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return new Response(
         JSON.stringify({ error: "Authentication required" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseAdmin.auth.getUser(token);
 
     if (authError || !user) {
       return new Response(
         JSON.stringify({ error: "Invalid or expired session" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -108,32 +128,64 @@ Deno.serve(async (req: Request) => {
     if (workerError || !workerAccount || !workerAccount.is_active) {
       return new Response(
         JSON.stringify({ error: "Unauthorized - Worker account required" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
-    console.log(`💳 Worker ${workerAccount.full_name} creating terminal payment intent`);
+    console.log(
+      `💳 Worker ${workerAccount.full_name} creating terminal payment intent`,
+    );
 
     // ============================================
-    // 2. PARSE & VALIDATE REQUEST
+    // 2. RATE LIMITING
+    // ============================================
+    const rateLimitResult = await checkRateLimit(
+      "POS_TRANSACTION",
+      workerAccount.id,
+    );
+    if (!rateLimitResult.success) {
+      return rateLimitResponse(
+        rateLimitResult,
+        corsHeaders,
+        "Too many payment requests. Please wait before creating more payments.",
+      );
+    }
+
+    // ============================================
+    // 3. PARSE & VALIDATE REQUEST
     // ============================================
     let payload: CreateTerminalPaymentRequest;
     try {
       payload = await req.json();
     } catch {
-      return new Response(
-        JSON.stringify({ error: "Invalid request body" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid request body" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    const { amountCents, posSessionId, customerEmail, customerName, description, metadata } = payload;
+    const {
+      amountCents,
+      posSessionId,
+      customerEmail,
+      customerName,
+      description,
+      metadata,
+    } = payload;
 
     // Validate amount
     if (!amountCents || typeof amountCents !== "number" || amountCents <= 0) {
       return new Response(
-        JSON.stringify({ error: "Invalid amount - must be a positive number in cents" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: "Invalid amount - must be a positive number in cents",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -141,7 +193,10 @@ Deno.serve(async (req: Request) => {
     if (!posSessionId || typeof posSessionId !== "string") {
       return new Response(
         JSON.stringify({ error: "POS session ID is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -149,14 +204,19 @@ Deno.serve(async (req: Request) => {
     if (amountCents > 5000000) {
       return new Response(
         JSON.stringify({ error: "Amount exceeds maximum allowed" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
-    console.log(`📋 Creating payment intent for $${(amountCents / 100).toFixed(2)}`);
+    console.log(
+      `📋 Creating payment intent for $${(amountCents / 100).toFixed(2)}`,
+    );
 
     // ============================================
-    // 3. CREATE STRIPE PAYMENT INTENT
+    // 4. CREATE STRIPE PAYMENT INTENT
     // ============================================
     // For Terminal payments, we need specific capture_method and payment_method_types
     const paymentIntentParams: Stripe.PaymentIntentCreateParams = {
@@ -183,12 +243,13 @@ Deno.serve(async (req: Request) => {
     paymentIntentParams.statement_descriptor = "4A RENTALS";
     paymentIntentParams.statement_descriptor_suffix = "RENTAL";
 
-    const paymentIntent = await stripe.paymentIntents.create(paymentIntentParams);
+    const paymentIntent =
+      await stripe.paymentIntents.create(paymentIntentParams);
 
     console.log(`✅ Payment intent created: ${paymentIntent.id}`);
 
     // ============================================
-    // 4. CREATE POS TRANSACTION RECORD
+    // 5. CREATE POS TRANSACTION RECORD
     // ============================================
     const { data: posTransaction, error: dbError } = await supabaseAdmin
       .from("pos_transactions")
@@ -210,14 +271,17 @@ Deno.serve(async (req: Request) => {
       await stripe.paymentIntents.cancel(paymentIntent.id);
       return new Response(
         JSON.stringify({ error: "Failed to create transaction record" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     console.log(`💾 POS transaction record created: ${posTransaction.id}`);
 
     // ============================================
-    // 5. RETURN PAYMENT INTENT
+    // 6. RETURN PAYMENT INTENT
     // ============================================
     return new Response(
       JSON.stringify({
@@ -227,27 +291,39 @@ Deno.serve(async (req: Request) => {
         amount: amountCents,
         status: paymentIntent.status,
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          ...rateLimitHeaders(rateLimitResult),
+        },
+      },
     );
-
   } catch (error) {
     console.error("❌ Create terminal payment intent error:", error);
-    
+
     // Check for Stripe-specific errors
     if (error instanceof Stripe.errors.StripeError) {
       return new Response(
-        JSON.stringify({ 
+        JSON.stringify({
           error: "Payment processing error",
           details: error.message,
           code: error.code,
         }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     return new Response(
       JSON.stringify({ error: "Failed to create payment intent" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
     );
   }
 });

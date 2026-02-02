@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useId } from "react";
+import { toBusinessDateString } from "@/utils/dates";
 import { Trash2, Plus } from "lucide-react";
 import { Card } from "@/components/ui";
 
@@ -26,7 +27,7 @@ interface AdditionalDriverFormProps {
   onChange: (
     index: number,
     field: keyof AdditionalDriverData,
-    value: string | boolean
+    value: string | boolean,
   ) => void;
   disabled?: boolean;
 }
@@ -40,7 +41,7 @@ interface DriverCardProps {
   onChange: (
     index: number,
     field: keyof AdditionalDriverData,
-    value: string | boolean
+    value: string | boolean,
   ) => void;
   disabled?: boolean;
 }
@@ -83,77 +84,77 @@ const DriverCard: React.FC<DriverCardProps> = ({
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange(index, "firstName", e.target.value);
     },
-    [onChange, index]
+    [onChange, index],
   );
 
   const handleLastNameChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange(index, "lastName", e.target.value);
     },
-    [onChange, index]
+    [onChange, index],
   );
 
   const handleEmailChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange(index, "email", e.target.value);
     },
-    [onChange, index]
+    [onChange, index],
   );
 
   const handlePhoneChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange(index, "phone", e.target.value);
     },
-    [onChange, index]
+    [onChange, index],
   );
 
   const handleDateOfBirthChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange(index, "dateOfBirth", e.target.value);
     },
-    [onChange, index]
+    [onChange, index],
   );
 
   const handleLicenseNumberChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange(index, "driversLicenseNumber", e.target.value.toUpperCase());
     },
-    [onChange, index]
+    [onChange, index],
   );
 
   const handleSameAddressChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange(index, "sameAddressAsPrimary", e.target.checked);
     },
-    [onChange, index]
+    [onChange, index],
   );
 
   const handleStreetAddressChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange(index, "streetAddress", e.target.value);
     },
-    [onChange, index]
+    [onChange, index],
   );
 
   const handleCityChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange(index, "city", e.target.value);
     },
-    [onChange, index]
+    [onChange, index],
   );
 
   const handleStateChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange(index, "state", e.target.value.toUpperCase());
     },
-    [onChange, index]
+    [onChange, index],
   );
 
   const handleZipCodeChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange(index, "zipCode", e.target.value);
     },
-    [onChange, index]
+    [onChange, index],
   );
 
   return (
@@ -219,7 +220,9 @@ const DriverCard: React.FC<DriverCardProps> = ({
 
       {/* Contact Fields */}
       <fieldset className="grid md:grid-cols-2 gap-4">
-        <legend className="sr-only">Contact information for driver {driverNumber}</legend>
+        <legend className="sr-only">
+          Contact information for driver {driverNumber}
+        </legend>
         <div>
           <label htmlFor={`${cardId}-email`} className="sr-only">
             Email
@@ -403,7 +406,7 @@ export const AdditionalDriverForm: React.FC<AdditionalDriverFormProps> = ({
 
   // Memoize max date (today) for date of birth
   const maxDateOfBirth = useMemo(() => {
-    return new Date().toISOString().split("T")[0];
+    return toBusinessDateString();
   }, []);
 
   // Memoized add handler
@@ -414,7 +417,11 @@ export const AdditionalDriverForm: React.FC<AdditionalDriverFormProps> = ({
   return (
     <div className="space-y-4" role="region" aria-label="Additional drivers">
       {drivers.length > 0 && (
-        <ul className="space-y-4" role="list" aria-label="List of additional drivers">
+        <ul
+          className="space-y-4"
+          role="list"
+          aria-label="List of additional drivers"
+        >
           {drivers.map((driver, index) => (
             <li key={`driver-${index}`}>
               <DriverCard

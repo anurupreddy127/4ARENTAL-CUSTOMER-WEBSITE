@@ -1,5 +1,11 @@
 // supabase/functions/send-booking-email/index.ts
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  checkRateLimit,
+  rateLimitResponse,
+  rateLimitHeaders,
+  type RateLimitResult,
+} from "../_shared/ratelimit.ts";
 
 // ============================================
 // ENVIRONMENT VARIABLES
@@ -23,42 +29,16 @@ const ALLOWED_ORIGINS = [
 // ============================================
 function getCorsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin") || "";
-  const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  const allowedOrigin = ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : ALLOWED_ORIGINS[0];
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
-}
-
-// ============================================
-// RATE LIMITING
-// ============================================
-interface RateLimitEntry {
-  count: number;
-  windowStart: number;
-}
-
-const rateLimitMap = new Map<string, RateLimitEntry>();
-const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const MAX_REQUESTS_PER_HOUR = 50; // Workers may send many emails
-
-function checkRateLimit(userId: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(userId);
-
-  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
-    rateLimitMap.set(userId, { count: 1, windowStart: now });
-    return true;
-  }
-
-  if (entry.count >= MAX_REQUESTS_PER_HOUR) {
-    return false;
-  }
-
-  entry.count++;
-  return true;
 }
 
 // ============================================
@@ -83,8 +63,19 @@ interface EmailTemplateData {
   customMessage?: string;
 }
 
-function generateEmailHtml(template: EmailTemplate, data: EmailTemplateData): string {
-  const { customerName, bookingNumber, vehicleName, pickupDate, returnDate, totalAmount, customMessage } = data;
+function generateEmailHtml(
+  template: EmailTemplate,
+  data: EmailTemplateData,
+): string {
+  const {
+    customerName,
+    bookingNumber,
+    vehicleName,
+    pickupDate,
+    returnDate,
+    totalAmount,
+    customMessage,
+  } = data;
 
   const baseStyles = `
     <style>
@@ -222,10 +213,10 @@ Deno.serve(async (req: Request) => {
 
   // Only allow POST
   if (req.method !== "POST") {
-    return new Response(
-      JSON.stringify({ error: "Method not allowed" }),
-      { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -238,7 +229,10 @@ Deno.serve(async (req: Request) => {
       console.error("RESEND_API_KEY not configured");
       return new Response(
         JSON.stringify({ error: "Email service unavailable" }),
-        { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 503,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -249,17 +243,26 @@ Deno.serve(async (req: Request) => {
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return new Response(
         JSON.stringify({ error: "Authentication required" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(token);
 
     if (authError || !user) {
       return new Response(
         JSON.stringify({ error: "Invalid or expired session" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -281,10 +284,17 @@ Deno.serve(async (req: Request) => {
     // ============================================
     // 4. RATE LIMITING
     // ============================================
-    if (!checkRateLimit(user.id)) {
-      return new Response(
-        JSON.stringify({ error: "Too many email requests. Please try again later." }),
-        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    // Workers get higher limits (50/hour), customers get standard limits (10/hour)
+    const rateLimitKey = isWorker ? "EMAIL_SEND_WORKER" : "EMAIL_SEND";
+    const rateLimitResult: RateLimitResult = await checkRateLimit(
+      rateLimitKey,
+      user.id,
+    );
+    if (!rateLimitResult.success) {
+      return rateLimitResponse(
+        rateLimitResult,
+        corsHeaders,
+        "Too many email requests. Please try again later.",
       );
     }
 
@@ -295,10 +305,10 @@ Deno.serve(async (req: Request) => {
     try {
       payload = await req.json();
     } catch {
-      return new Response(
-        JSON.stringify({ error: "Invalid request body" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid request body" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const { to, template, subject, data } = payload;
@@ -306,8 +316,13 @@ Deno.serve(async (req: Request) => {
     // Validate required fields
     if (!to || !template || !subject || !data) {
       return new Response(
-        JSON.stringify({ error: "Missing required fields: to, template, subject, data" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: "Missing required fields: to, template, subject, data",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -315,7 +330,10 @@ Deno.serve(async (req: Request) => {
     if (!validateEmail(to)) {
       return new Response(
         JSON.stringify({ error: "Invalid recipient email" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -331,25 +349,33 @@ Deno.serve(async (req: Request) => {
     ];
 
     if (!validTemplates.includes(template)) {
-      return new Response(
-        JSON.stringify({ error: "Invalid email template" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid email template" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // Custom template only allowed for workers
     if (template === "custom" && !isWorker) {
       return new Response(
         JSON.stringify({ error: "Custom emails require worker authorization" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // If customer is triggering, they can only send to themselves
     if (isCustomerSelfEmail && to.toLowerCase() !== user.email?.toLowerCase()) {
       return new Response(
-        JSON.stringify({ error: "You can only send booking emails to your own email" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: "You can only send booking emails to your own email",
+        }),
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -357,16 +383,19 @@ Deno.serve(async (req: Request) => {
     if (!data.customerName || data.customerName.trim().length === 0) {
       return new Response(
         JSON.stringify({ error: "Customer name is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Validate subject length
     if (subject.length > 200) {
-      return new Response(
-        JSON.stringify({ error: "Subject too long" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Subject too long" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // ============================================
@@ -378,7 +407,10 @@ Deno.serve(async (req: Request) => {
     } catch (error) {
       return new Response(
         JSON.stringify({ error: "Failed to generate email" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -403,10 +435,10 @@ Deno.serve(async (req: Request) => {
 
     if (!response.ok) {
       console.error("Failed to send email:", responseData);
-      return new Response(
-        JSON.stringify({ error: "Failed to send email" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Failed to send email" }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // ============================================
@@ -435,14 +467,20 @@ Deno.serve(async (req: Request) => {
 
     return new Response(
       JSON.stringify({ success: true, messageId: responseData.id }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          ...rateLimitHeaders(rateLimitResult),
+        },
+      },
     );
-
   } catch (error) {
     console.error("Error in send-booking-email:", error);
-    return new Response(
-      JSON.stringify({ error: "Failed to send email" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: "Failed to send email" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });

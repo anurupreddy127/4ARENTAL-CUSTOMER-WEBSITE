@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { supabase } from "@/config/supabase";
 import { Booking, RentalType } from "@/types";
+import { toBusinessDateString } from "@/utils/dates";
 
 // ============================================
 // TYPES
@@ -63,12 +64,12 @@ function getDaysRemaining(returnDate: string): number {
 function addDays(dateString: string, days: number): string {
   const date = new Date(dateString);
   date.setDate(date.getDate() + days);
-  return date.toISOString();
+  return toBusinessDateString(date);
 }
 
 function calculateDaysBetween(startDate: string, endDate: string): number {
-  const start = new Date(startDate);
-  const end = new Date(endDate);
+  const start = new Date(startDate.split("T")[0]);
+  const end = new Date(endDate.split("T")[0]);
   const diffTime = end.getTime() - start.getTime();
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 }
@@ -159,7 +160,7 @@ export const extensionService = {
     vehicleId: string,
     currentReturnDate: string,
     newReturnDate: string,
-    currentBookingId: string
+    currentBookingId: string,
   ): Promise<ExtensionAvailability> {
     log("Checking availability", {
       vehicleId,
@@ -210,7 +211,7 @@ export const extensionService = {
       // We don't block for holidays in the middle, only for return date
       const newReturnDateStr = newReturnDate.split("T")[0];
       const returnDateBlocked = blockedDates?.find(
-        (d) => d.calendar_date === newReturnDateStr
+        (d) => d.calendar_date === newReturnDateStr,
       );
 
       if (returnDateBlocked) {
@@ -235,11 +236,11 @@ export const extensionService = {
    */
   calculateExtensionPricing(
     booking: Booking,
-    newReturnDate: string
+    newReturnDate: string,
   ): ExtensionPricing {
     const additionalDays = calculateDaysBetween(
       booking.returnDate,
-      newReturnDate
+      newReturnDate,
     );
     const newTotalDays = (booking.rentalDays || 0) + additionalDays;
 
@@ -307,8 +308,8 @@ export const extensionService = {
     maxDate.setDate(maxDate.getDate() + MAX_EXTENSION_DAYS);
 
     return {
-      minDate: minDate.toISOString().split("T")[0],
-      maxDate: maxDate.toISOString().split("T")[0],
+      minDate: toBusinessDateString(minDate),
+      maxDate: toBusinessDateString(maxDate),
     };
   },
 };

@@ -1,6 +1,11 @@
 // supabase/functions/create-identity-verification/index.ts
 import Stripe from "npm:stripe@14";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  checkRateLimit,
+  rateLimitResponse,
+  rateLimitHeaders,
+} from "../_shared/ratelimit.ts";
 
 // ============================================
 // ENVIRONMENT VARIABLES
@@ -26,11 +31,14 @@ const ALLOWED_ORIGINS = [
 // ============================================
 function getCorsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin") || "";
-  const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  const allowedOrigin = ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : ALLOWED_ORIGINS[0];
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 }
@@ -57,7 +65,8 @@ interface DriverInfo {
 // VALIDATION HELPERS
 // ============================================
 function isValidUUID(str: string): boolean {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   return uuidRegex.test(str);
 }
 
@@ -74,14 +83,16 @@ Deno.serve(async (req: Request) => {
 
   // Only allow POST
   if (req.method !== "POST") {
-    return new Response(
-      JSON.stringify({ error: "Method not allowed" }),
-      { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-  const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-11-20.acacia" });
+  const stripe = new Stripe(STRIPE_SECRET_KEY, {
+    apiVersion: "2024-11-20.acacia",
+  });
 
   try {
     // ============================================
@@ -91,17 +102,26 @@ Deno.serve(async (req: Request) => {
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return new Response(
         JSON.stringify({ error: "Authentication required" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseAdmin.auth.getUser(token);
 
     if (authError || !user) {
       return new Response(
         JSON.stringify({ error: "Invalid or expired session" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -115,84 +135,111 @@ Deno.serve(async (req: Request) => {
     if (workerError || !workerAccount || !workerAccount.is_active) {
       return new Response(
         JSON.stringify({ error: "Unauthorized - Worker account required" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     console.log(`🔐 Worker ${workerAccount.full_name} initiating verification`);
 
     // ============================================
-    // 2. PARSE & VALIDATE REQUEST
+    // 2. RATE LIMITING
+    // ============================================
+    const rateLimitResult = await checkRateLimit(
+      "VERIFICATION_UPLOAD",
+      workerAccount.id,
+    );
+    if (!rateLimitResult.success) {
+      return rateLimitResponse(
+        rateLimitResult,
+        corsHeaders,
+        "Too many verification requests. Please wait before initiating more verifications.",
+      );
+    }
+
+    // ============================================
+    // 3. PARSE & VALIDATE REQUEST
     // ============================================
     let payload: CreateVerificationRequest;
     try {
       payload = await req.json();
     } catch {
-      return new Response(
-        JSON.stringify({ error: "Invalid request body" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid request body" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const { driverType, driverId, bookingId } = payload;
 
     // Validate driver type
     if (!driverType || !["primary", "additional"].includes(driverType)) {
-      return new Response(
-        JSON.stringify({ error: "Invalid driver type" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid driver type" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // Validate UUIDs
     if (!driverId || !isValidUUID(driverId)) {
-      return new Response(
-        JSON.stringify({ error: "Invalid driver ID" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid driver ID" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     if (!bookingId || !isValidUUID(bookingId)) {
-      return new Response(
-        JSON.stringify({ error: "Invalid booking ID" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid booking ID" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // ============================================
-    // 3. FETCH DRIVER INFORMATION
+    // 4. FETCH DRIVER INFORMATION
     // ============================================
-    const driverTable = driverType === "primary" ? "primary_drivers" : "additional_drivers";
-    
+    const driverTable =
+      driverType === "primary" ? "primary_drivers" : "additional_drivers";
+
     const { data: driver, error: driverError } = await supabaseAdmin
       .from(driverTable)
-      .select("id, first_name, last_name, email, date_of_birth, drivers_license, booking_id")
+      .select(
+        "id, first_name, last_name, email, date_of_birth, drivers_license, booking_id",
+      )
       .eq("id", driverId)
       .eq("booking_id", bookingId)
       .single();
 
     if (driverError || !driver) {
       console.error("Driver fetch error:", driverError);
-      return new Response(
-        JSON.stringify({ error: "Driver not found" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Driver not found" }), {
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    console.log(`📋 Verifying ${driverType} driver: ${driver.first_name} ${driver.last_name}`);
+    console.log(
+      `📋 Verifying ${driverType} driver: ${driver.first_name} ${driver.last_name}`,
+    );
 
     // ============================================
-    // 4. CHECK FOR EXISTING VALID VERIFICATION
+    // 5. CHECK FOR EXISTING VALID VERIFICATION
     // ============================================
-    const { data: existingVerification } = await supabaseAdmin
-      .rpc("check_existing_verification", {
+    const { data: existingVerification } = await supabaseAdmin.rpc(
+      "check_existing_verification",
+      {
         p_license_number: driver.drivers_license,
-      });
+      },
+    );
 
     if (existingVerification && existingVerification.length > 0) {
       const existing = existingVerification[0];
-      console.log(`✅ Found existing valid verification for license: ${driver.drivers_license}`);
-      
+      console.log(
+        `✅ Found existing valid verification for license: ${driver.drivers_license}`,
+      );
+
       // Update the driver's verified status
       await supabaseAdmin
         .from(driverTable)
@@ -217,17 +264,29 @@ Deno.serve(async (req: Request) => {
             status: existing.status,
           },
         }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 200,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+            ...rateLimitHeaders(rateLimitResult),
+          },
+        },
       );
     }
 
     // ============================================
-    // 5. CHECK FOR PENDING VERIFICATION
+    // 6. CHECK FOR PENDING VERIFICATION
     // ============================================
     const { data: pendingVerification } = await supabaseAdmin
       .from("driver_verifications")
-      .select("id, stripe_session_id, status, document_error_retry_count, technical_error_retry_count")
-      .eq(driverType === "primary" ? "primary_driver_id" : "additional_driver_id", driverId)
+      .select(
+        "id, stripe_session_id, status, document_error_retry_count, technical_error_retry_count",
+      )
+      .eq(
+        driverType === "primary" ? "primary_driver_id" : "additional_driver_id",
+        driverId,
+      )
       .eq("booking_id", bookingId)
       .in("status", ["pending", "processing"])
       .order("created_at", { ascending: false })
@@ -237,20 +296,33 @@ Deno.serve(async (req: Request) => {
     // If there's a pending session, retrieve its client secret
     if (pendingVerification && pendingVerification.stripe_session_id) {
       try {
-        const existingSession = await stripe.identity.verificationSessions.retrieve(
-          pendingVerification.stripe_session_id
-        );
+        const existingSession =
+          await stripe.identity.verificationSessions.retrieve(
+            pendingVerification.stripe_session_id,
+          );
 
         // If session is still usable, return it
-        if (existingSession.status === "requires_input" && existingSession.client_secret) {
-          console.log(`♻️ Reusing existing verification session: ${existingSession.id}`);
+        if (
+          existingSession.status === "requires_input" &&
+          existingSession.client_secret
+        ) {
+          console.log(
+            `♻️ Reusing existing verification session: ${existingSession.id}`,
+          );
           return new Response(
             JSON.stringify({
               clientSecret: existingSession.client_secret,
               verificationId: pendingVerification.id,
               sessionId: existingSession.id,
             }),
-            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            {
+              status: 200,
+              headers: {
+                ...corsHeaders,
+                "Content-Type": "application/json",
+                ...rateLimitHeaders(rateLimitResult),
+              },
+            },
           );
         }
       } catch (err) {
@@ -259,31 +331,32 @@ Deno.serve(async (req: Request) => {
     }
 
     // ============================================
-    // 6. CREATE STRIPE VERIFICATION SESSION
+    // 7. CREATE STRIPE VERIFICATION SESSION
     // ============================================
     console.log(`🆕 Creating new Stripe verification session`);
 
-    const verificationSession = await stripe.identity.verificationSessions.create({
-      verification_flow: VERIFICATION_FLOW_ID,
-      provided_details: {
-        email: driver.email,
-      },
-      metadata: {
-        driver_type: driverType,
-        driver_id: driverId,
-        booking_id: bookingId,
-        worker_id: workerAccount.id,
-        worker_name: workerAccount.full_name,
-        provided_first_name: driver.first_name,
-        provided_last_name: driver.last_name,
-        provided_license_number: driver.drivers_license,
-      },
-    });
+    const verificationSession =
+      await stripe.identity.verificationSessions.create({
+        verification_flow: VERIFICATION_FLOW_ID,
+        provided_details: {
+          email: driver.email,
+        },
+        metadata: {
+          driver_type: driverType,
+          driver_id: driverId,
+          booking_id: bookingId,
+          worker_id: workerAccount.id,
+          worker_name: workerAccount.full_name,
+          provided_first_name: driver.first_name,
+          provided_last_name: driver.last_name,
+          provided_license_number: driver.drivers_license,
+        },
+      });
 
     console.log(`✅ Stripe session created: ${verificationSession.id}`);
 
     // ============================================
-    // 7. CREATE DATABASE RECORD
+    // 8. CREATE DATABASE RECORD
     // ============================================
     const verificationRecord = {
       driver_type: driverType,
@@ -311,14 +384,17 @@ Deno.serve(async (req: Request) => {
       await stripe.identity.verificationSessions.cancel(verificationSession.id);
       return new Response(
         JSON.stringify({ error: "Failed to create verification record" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     console.log(`💾 Verification record created: ${dbVerification.id}`);
 
     // ============================================
-    // 8. RETURN CLIENT SECRET
+    // 9. RETURN CLIENT SECRET
     // ============================================
     return new Response(
       JSON.stringify({
@@ -326,14 +402,23 @@ Deno.serve(async (req: Request) => {
         verificationId: dbVerification.id,
         sessionId: verificationSession.id,
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          ...rateLimitHeaders(rateLimitResult),
+        },
+      },
     );
-
   } catch (error) {
     console.error("❌ Verification session error:", error);
     return new Response(
       JSON.stringify({ error: "Failed to create verification session" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
     );
   }
 });

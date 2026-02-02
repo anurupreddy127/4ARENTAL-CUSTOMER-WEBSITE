@@ -1,5 +1,10 @@
 // supabase/functions/record-cash-payment/index.ts
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  checkRateLimit,
+  rateLimitResponse,
+  rateLimitHeaders,
+} from "../_shared/ratelimit.ts";
 
 // ============================================
 // ENVIRONMENT VARIABLES
@@ -23,11 +28,14 @@ const ALLOWED_ORIGINS = [
 // ============================================
 function getCorsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin") || "";
-  const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  const allowedOrigin = ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : ALLOWED_ORIGINS[0];
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 }
@@ -58,10 +66,10 @@ Deno.serve(async (req: Request) => {
 
   // Only allow POST
   if (req.method !== "POST") {
-    return new Response(
-      JSON.stringify({ error: "Method not allowed" }),
-      { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -74,17 +82,26 @@ Deno.serve(async (req: Request) => {
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return new Response(
         JSON.stringify({ error: "Authentication required" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseAdmin.auth.getUser(token);
 
     if (authError || !user) {
       return new Response(
         JSON.stringify({ error: "Invalid or expired session" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -98,68 +115,106 @@ Deno.serve(async (req: Request) => {
     if (workerError || !workerAccount || !workerAccount.is_active) {
       return new Response(
         JSON.stringify({ error: "Unauthorized - Worker account required" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     console.log(`💵 Worker ${workerAccount.full_name} recording cash payment`);
 
     // ============================================
-    // 2. PARSE & VALIDATE REQUEST
+    // 2. RATE LIMITING
+    // ============================================
+    const rateLimitResult = await checkRateLimit(
+      "POS_TRANSACTION",
+      workerAccount.id,
+    );
+    if (!rateLimitResult.success) {
+      return rateLimitResponse(
+        rateLimitResult,
+        corsHeaders,
+        "Too many POS transactions. Please wait before processing more payments.",
+      );
+    }
+
+    // ============================================
+    // 3. PARSE & VALIDATE REQUEST
     // ============================================
     let payload: RecordCashPaymentRequest;
     try {
       payload = await req.json();
     } catch {
-      return new Response(
-        JSON.stringify({ error: "Invalid request body" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid request body" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    const { 
-      posSessionId, 
-      amountCents, 
-      cashTenderedCents, 
-      customerName, 
-      customerEmail, 
-      description, 
-      notes 
+    const {
+      posSessionId,
+      amountCents,
+      cashTenderedCents,
+      customerName,
+      customerEmail,
+      description,
+      notes,
     } = payload;
 
     // Validate POS session ID
     if (!posSessionId || typeof posSessionId !== "string") {
       return new Response(
         JSON.stringify({ error: "POS session ID is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Validate amount
     if (!amountCents || typeof amountCents !== "number" || amountCents <= 0) {
       return new Response(
-        JSON.stringify({ error: "Invalid amount - must be a positive number in cents" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: "Invalid amount - must be a positive number in cents",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Validate cash tendered
-    if (!cashTenderedCents || typeof cashTenderedCents !== "number" || cashTenderedCents <= 0) {
+    if (
+      !cashTenderedCents ||
+      typeof cashTenderedCents !== "number" ||
+      cashTenderedCents <= 0
+    ) {
       return new Response(
-        JSON.stringify({ error: "Invalid cash tendered - must be a positive number in cents" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: "Invalid cash tendered - must be a positive number in cents",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Validate cash tendered is enough
     if (cashTenderedCents < amountCents) {
       return new Response(
-        JSON.stringify({ 
+        JSON.stringify({
           error: "Insufficient cash tendered",
           required: amountCents,
           tendered: cashTenderedCents,
         }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -167,24 +222,31 @@ Deno.serve(async (req: Request) => {
     if (amountCents > 5000000) {
       return new Response(
         JSON.stringify({ error: "Amount exceeds maximum allowed" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Calculate change
     const changeCents = cashTenderedCents - amountCents;
 
-    console.log(`📋 Recording cash payment: $${(amountCents / 100).toFixed(2)}, Tendered: $${(cashTenderedCents / 100).toFixed(2)}, Change: $${(changeCents / 100).toFixed(2)}`);
+    console.log(
+      `📋 Recording cash payment: $${(amountCents / 100).toFixed(2)}, Tendered: $${(cashTenderedCents / 100).toFixed(2)}, Change: $${(changeCents / 100).toFixed(2)}`,
+    );
 
     // ============================================
-    // 3. CREATE POS TRANSACTION RECORD
+    // 4. CREATE POS TRANSACTION RECORD
     // ============================================
     const transactionNotes = [
       description || "Cash payment",
       notes,
       customerName ? `Customer: ${customerName}` : null,
       customerEmail ? `Email: ${customerEmail}` : null,
-    ].filter(Boolean).join(" | ");
+    ]
+      .filter(Boolean)
+      .join(" | ");
 
     const { data: posTransaction, error: dbError } = await supabaseAdmin
       .from("pos_transactions")
@@ -206,14 +268,17 @@ Deno.serve(async (req: Request) => {
       console.error("❌ Database error:", dbError);
       return new Response(
         JSON.stringify({ error: "Failed to record cash payment" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     console.log(`✅ Cash payment recorded: ${posTransaction.id}`);
 
     // ============================================
-    // 4. RETURN RESPONSE
+    // 5. RETURN RESPONSE
     // ============================================
     return new Response(
       JSON.stringify({
@@ -226,14 +291,23 @@ Deno.serve(async (req: Request) => {
         createdAt: posTransaction.created_at,
         message: `Cash payment of $${(amountCents / 100).toFixed(2)} recorded. Change due: $${(changeCents / 100).toFixed(2)}`,
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          ...rateLimitHeaders(rateLimitResult),
+        },
+      },
     );
-
   } catch (error) {
     console.error("❌ Record cash payment error:", error);
     return new Response(
       JSON.stringify({ error: "Failed to record cash payment" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
     );
   }
 });

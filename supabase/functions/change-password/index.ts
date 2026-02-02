@@ -1,5 +1,10 @@
 // supabase/functions/change-password/index.ts
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  checkRateLimit,
+  rateLimitResponse,
+  rateLimitHeaders,
+} from "../_shared/ratelimit.ts";
 
 // ============================================
 // ENVIRONMENT VARIABLES
@@ -11,10 +16,10 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 // ALLOWED ORIGINS (Production)
 // ============================================
 const ALLOWED_ORIGINS = [
-  "https://workers.4arentals.com",  // Worker portal production
-  "https://admin.4arentals.com",    // Admin portal if separate
-  "http://localhost:5173",          // Local development (remove in strict production)
-  "http://localhost:5174",          // Local development alternate port
+  "https://workers.4arentals.com", // Worker portal production
+  "https://admin.4arentals.com", // Admin portal if separate
+  "http://localhost:5173", // Local development (remove in strict production)
+  "http://localhost:5174", // Local development alternate port
 ];
 
 // ============================================
@@ -22,11 +27,14 @@ const ALLOWED_ORIGINS = [
 // ============================================
 function getCorsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin") || "";
-  const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
-  
+  const allowedOrigin = ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : ALLOWED_ORIGINS[0];
+
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 }
@@ -42,36 +50,6 @@ interface ChangePasswordRequest {
 interface PasswordValidationResult {
   valid: boolean;
   errors: string[];
-}
-
-interface RateLimitEntry {
-  count: number;
-  windowStart: number;
-}
-
-// ============================================
-// RATE LIMITING (In-memory sliding window)
-// Note: Will be replaced with Redis/DB-based solution
-// ============================================
-const rateLimitMap = new Map<string, RateLimitEntry>();
-const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const MAX_REQUESTS_PER_HOUR = 5;
-
-function checkRateLimit(userId: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(userId);
-
-  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
-    rateLimitMap.set(userId, { count: 1, windowStart: now });
-    return true;
-  }
-
-  if (entry.count >= MAX_REQUESTS_PER_HOUR) {
-    return false;
-  }
-
-  entry.count++;
-  return true;
 }
 
 // ============================================
@@ -101,7 +79,9 @@ function validatePassword(password: string): PasswordValidationResult {
   }
 
   if (!/[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]/.test(password)) {
-    errors.push("Password must contain at least one special character (!@#$%^&*()_+-=[]{}|;:,.<>?)");
+    errors.push(
+      "Password must contain at least one special character (!@#$%^&*()_+-=[]{}|;:,.<>?)",
+    );
   }
 
   return {
@@ -127,7 +107,7 @@ async function logAuditEvent(
     newData?: Record<string, unknown>;
     req: Request;
     success: boolean;
-  }
+  },
 ) {
   try {
     await supabaseAdmin.from("audit_logs").insert({
@@ -140,9 +120,10 @@ async function logAuditEvent(
       description: params.description,
       old_data: params.oldData,
       new_data: params.newData,
-      ip_address: params.req.headers.get("x-forwarded-for") || 
-                  params.req.headers.get("cf-connecting-ip") || 
-                  "unknown",
+      ip_address:
+        params.req.headers.get("x-forwarded-for") ||
+        params.req.headers.get("cf-connecting-ip") ||
+        "unknown",
       user_agent: params.req.headers.get("user-agent") || "unknown",
     });
   } catch (error) {
@@ -165,7 +146,10 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response(
       JSON.stringify({ success: false, error: "Method not allowed" }),
-      { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 405,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
     );
   }
 
@@ -180,20 +164,27 @@ Deno.serve(async (req: Request) => {
       await logAuditEvent(supabaseAdmin, {
         action: "CHANGE_PASSWORD_FAILED",
         resourceType: "worker_account",
-        description: "Password change attempt without valid authorization header",
+        description:
+          "Password change attempt without valid authorization header",
         req,
         success: false,
       });
-      
+
       return new Response(
         JSON.stringify({ success: false, error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
-    
+    const {
+      data: { user },
+      error: userError,
+    } = await supabaseAdmin.auth.getUser(token);
+
     if (userError || !user) {
       await logAuditEvent(supabaseAdmin, {
         action: "CHANGE_PASSWORD_FAILED",
@@ -202,10 +193,13 @@ Deno.serve(async (req: Request) => {
         req,
         success: false,
       });
-      
+
       return new Response(
         JSON.stringify({ success: false, error: "Invalid or expired session" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -214,7 +208,9 @@ Deno.serve(async (req: Request) => {
     // ============================================
     const { data: workerAccount, error: workerError } = await supabaseAdmin
       .from("worker_accounts")
-      .select("id, professional_email, full_name, role, is_active, must_change_password")
+      .select(
+        "id, professional_email, full_name, role, is_active, must_change_password",
+      )
       .eq("auth_user_id", user.id)
       .single();
 
@@ -226,10 +222,13 @@ Deno.serve(async (req: Request) => {
         req,
         success: false,
       });
-      
+
       return new Response(
         JSON.stringify({ success: false, error: "Worker account not found" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -245,17 +244,24 @@ Deno.serve(async (req: Request) => {
         req,
         success: false,
       });
-      
+
       return new Response(
-        JSON.stringify({ success: false, error: "Account is inactive. Please contact your administrator." }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          success: false,
+          error: "Account is inactive. Please contact your administrator.",
+        }),
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // ============================================
     // 3. RATE LIMITING
     // ============================================
-    if (!checkRateLimit(user.id)) {
+    const rateLimitResult = await checkRateLimit("PASSWORD_CHANGE", user.id);
+    if (!rateLimitResult.success) {
       await logAuditEvent(supabaseAdmin, {
         workerId: workerAccount.id,
         workerEmail: workerAccount.professional_email,
@@ -267,13 +273,11 @@ Deno.serve(async (req: Request) => {
         req,
         success: false,
       });
-      
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: "Rate limit exceeded. Maximum 5 password changes per hour. Please try again later.",
-        }),
-        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+
+      return rateLimitResponse(
+        rateLimitResult,
+        corsHeaders,
+        "Rate limit exceeded. Maximum 5 password changes per hour. Please try again later.",
       );
     }
 
@@ -286,7 +290,10 @@ Deno.serve(async (req: Request) => {
     } catch {
       return new Response(
         JSON.stringify({ success: false, error: "Invalid JSON body" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -294,15 +301,24 @@ Deno.serve(async (req: Request) => {
 
     if (!new_password || !confirm_password) {
       return new Response(
-        JSON.stringify({ success: false, error: "Missing required fields: new_password and confirm_password" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          success: false,
+          error: "Missing required fields: new_password and confirm_password",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     if (new_password !== confirm_password) {
       return new Response(
         JSON.stringify({ success: false, error: "Passwords do not match" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -314,17 +330,20 @@ Deno.serve(async (req: Request) => {
           error: "Password does not meet requirements",
           validation_errors: validation.errors,
         }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // ============================================
     // 5. UPDATE PASSWORD
     // ============================================
-    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
-      user.id,
-      { password: new_password }
-    );
+    const { error: updateError } =
+      await supabaseAdmin.auth.admin.updateUserById(user.id, {
+        password: new_password,
+      });
 
     if (updateError) {
       await logAuditEvent(supabaseAdmin, {
@@ -338,10 +357,16 @@ Deno.serve(async (req: Request) => {
         req,
         success: false,
       });
-      
+
       return new Response(
-        JSON.stringify({ success: false, error: "Failed to update password. Please try again." }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          success: false,
+          error: "Failed to update password. Please try again.",
+        }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -357,7 +382,10 @@ Deno.serve(async (req: Request) => {
       .eq("id", workerAccount.id);
 
     if (updateWorkerError) {
-      console.error("Failed to update must_change_password flag:", updateWorkerError);
+      console.error(
+        "Failed to update must_change_password flag:",
+        updateWorkerError,
+      );
     }
 
     // ============================================
@@ -387,9 +415,15 @@ Deno.serve(async (req: Request) => {
         success: true,
         message: "Password changed successfully",
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          ...rateLimitHeaders(rateLimitResult),
+        },
+      },
     );
-
   } catch (error) {
     console.error("Error in change-password:", error);
 
@@ -398,7 +432,10 @@ Deno.serve(async (req: Request) => {
         success: false,
         error: "An unexpected error occurred. Please try again.",
       }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
     );
   }
 });

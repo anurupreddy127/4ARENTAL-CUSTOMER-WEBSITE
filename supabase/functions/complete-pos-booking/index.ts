@@ -1,6 +1,11 @@
 // supabase/functions/complete-pos-booking/index.ts
 import Stripe from "npm:stripe@14";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  checkRateLimit,
+  rateLimitResponse,
+  rateLimitHeaders,
+} from "../_shared/ratelimit.ts";
 
 // ============================================
 // ENVIRONMENT VARIABLES
@@ -26,11 +31,14 @@ const ALLOWED_ORIGINS = [
 // ============================================
 function getCorsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin") || "";
-  const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  const allowedOrigin = ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : ALLOWED_ORIGINS[0];
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 }
@@ -112,7 +120,8 @@ interface CompletePOSBookingRequest {
 // VALIDATION HELPERS
 // ============================================
 function isValidUUID(str: string): boolean {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   return uuidRegex.test(str);
 }
 
@@ -159,7 +168,7 @@ async function sendPOSBookingConfirmationEmail(
   vehicleName: string,
   pickupDate: string,
   returnDate: string,
-  totalPrice: number
+  totalPrice: number,
 ): Promise<void> {
   if (!RESEND_API_KEY) {
     console.warn("⚠️ RESEND_API_KEY not configured, skipping email");
@@ -243,14 +252,16 @@ Deno.serve(async (req: Request) => {
 
   // Only allow POST
   if (req.method !== "POST") {
-    return new Response(
-      JSON.stringify({ error: "Method not allowed" }),
-      { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-  const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-11-20.acacia" });
+  const stripe = new Stripe(STRIPE_SECRET_KEY, {
+    apiVersion: "2024-11-20.acacia",
+  });
 
   try {
     // ============================================
@@ -260,17 +271,26 @@ Deno.serve(async (req: Request) => {
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return new Response(
         JSON.stringify({ error: "Authentication required" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
+    const {
+      data: { user },
+      error: authError,
+    } = await supabaseAdmin.auth.getUser(token);
 
     if (authError || !user) {
       return new Response(
         JSON.stringify({ error: "Invalid or expired session" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -284,23 +304,41 @@ Deno.serve(async (req: Request) => {
     if (workerError || !workerAccount || !workerAccount.is_active) {
       return new Response(
         JSON.stringify({ error: "Unauthorized - Worker account required" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     console.log(`📝 Worker ${workerAccount.full_name} completing POS booking`);
 
     // ============================================
-    // 2. PARSE & VALIDATE REQUEST
+    // 2. RATE LIMITING
+    // ============================================
+    const rateLimitResult = await checkRateLimit(
+      "POS_TRANSACTION",
+      workerAccount.id,
+    );
+    if (!rateLimitResult.success) {
+      return rateLimitResponse(
+        rateLimitResult,
+        corsHeaders,
+        "Too many booking requests. Please wait before completing more bookings.",
+      );
+    }
+
+    // ============================================
+    // 3. PARSE & VALIDATE REQUEST
     // ============================================
     let payload: CompletePOSBookingRequest;
     try {
       payload = await req.json();
     } catch {
-      return new Response(
-        JSON.stringify({ error: "Invalid request body" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid request body" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const {
@@ -324,86 +362,122 @@ Deno.serve(async (req: Request) => {
     if (!posSessionId) {
       return new Response(
         JSON.stringify({ error: "POS session ID is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
-    if (!customerData || !customerData.email || !isValidEmail(customerData.email)) {
+    if (
+      !customerData ||
+      !customerData.email ||
+      !isValidEmail(customerData.email)
+    ) {
       return new Response(
         JSON.stringify({ error: "Valid customer data with email is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     if (!primaryVerificationId || !isValidUUID(primaryVerificationId)) {
       return new Response(
         JSON.stringify({ error: "Valid primary verification ID is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     if (!vehicleId || !isValidUUID(vehicleId)) {
       return new Response(
         JSON.stringify({ error: "Valid vehicle ID is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     if (!pickupDate || !returnDate) {
       return new Response(
         JSON.stringify({ error: "Pickup and return dates are required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     if (!pricingData || !paymentData) {
       return new Response(
         JSON.stringify({ error: "Pricing and payment data are required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     if (!signatureData) {
       return new Response(
         JSON.stringify({ error: "Customer signature is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // ============================================
-    // 3. VERIFY PRIMARY DRIVER VERIFICATION
+    // 4. VERIFY PRIMARY DRIVER VERIFICATION
     // ============================================
-    const { data: primaryVerification, error: verificationError } = await supabaseAdmin
-      .from("pending_pos_verifications")
-      .select("*")
-      .eq("id", primaryVerificationId)
-      .eq("pos_session_id", posSessionId)
-      .eq("driver_role", "primary")
-      .single();
+    const { data: primaryVerification, error: verificationError } =
+      await supabaseAdmin
+        .from("pending_pos_verifications")
+        .select("*")
+        .eq("id", primaryVerificationId)
+        .eq("pos_session_id", posSessionId)
+        .eq("driver_role", "primary")
+        .single();
 
     if (verificationError || !primaryVerification) {
       console.error("❌ Primary verification not found:", verificationError);
       return new Response(
         JSON.stringify({ error: "Primary driver verification not found" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Check verification status
-    if (!["verified", "overridden"].includes(primaryVerification.verification_status)) {
+    if (
+      !["verified", "overridden"].includes(
+        primaryVerification.verification_status,
+      )
+    ) {
       return new Response(
-        JSON.stringify({ 
+        JSON.stringify({
           error: "Primary driver verification is not complete",
           status: primaryVerification.verification_status,
         }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     console.log(`✅ Primary verification valid: ${primaryVerification.id}`);
 
     // ============================================
-    // 4. VERIFY VEHICLE AVAILABILITY
+    // 5. VERIFY VEHICLE AVAILABILITY
     // ============================================
     const { data: vehicle, error: vehicleError } = await supabaseAdmin
       .from("vehicles")
@@ -412,30 +486,36 @@ Deno.serve(async (req: Request) => {
       .single();
 
     if (vehicleError || !vehicle) {
-      return new Response(
-        JSON.stringify({ error: "Vehicle not found" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Vehicle not found" }), {
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     if (vehicle.status !== "available") {
       return new Response(
-        JSON.stringify({ error: "Vehicle is not available", currentStatus: vehicle.status }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: "Vehicle is not available",
+          currentStatus: vehicle.status,
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     console.log(`✅ Vehicle available: ${vehicle.name}`);
 
     // ============================================
-    // 5. FIND OR CREATE USER
+    // 6. FIND OR CREATE USER
     // ============================================
     let userId: string | null = null;
 
     // Check if user exists with this email
     const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers();
     const existingUser = existingUsers?.users?.find(
-      (u) => u.email?.toLowerCase() === customerData.email.toLowerCase()
+      (u) => u.email?.toLowerCase() === customerData.email.toLowerCase(),
     );
 
     if (existingUser) {
@@ -443,9 +523,43 @@ Deno.serve(async (req: Request) => {
       console.log(`👤 Found existing user: ${userId}`);
 
       // Update user profile with latest info
-      await supabaseAdmin
-        .from("user_profiles")
-        .upsert({
+      await supabaseAdmin.from("user_profiles").upsert({
+        id: userId,
+        first_name: customerData.firstName,
+        last_name: customerData.lastName,
+        phone: customerData.phone,
+        date_of_birth: customerData.dateOfBirth,
+        drivers_license_number: customerData.driversLicense,
+        street_address: customerData.streetAddress || null,
+        city: customerData.city || null,
+        state: customerData.state || null,
+        zip_code: customerData.zipCode || null,
+        updated_at: new Date().toISOString(),
+      });
+    } else {
+      // Create new user (without password - they can reset later)
+      const tempPassword = crypto.randomUUID();
+      const { data: newUser, error: createUserError } =
+        await supabaseAdmin.auth.admin.createUser({
+          email: customerData.email,
+          password: tempPassword,
+          email_confirm: true,
+          user_metadata: {
+            first_name: customerData.firstName,
+            last_name: customerData.lastName,
+            created_via: "pos_walk_in",
+          },
+        });
+
+      if (createUserError) {
+        console.error("❌ Failed to create user:", createUserError);
+        // Continue without user - booking can still be created
+      } else {
+        userId = newUser.user.id;
+        console.log(`👤 Created new user: ${userId}`);
+
+        // Create user profile
+        await supabaseAdmin.from("user_profiles").insert({
           id: userId,
           first_name: customerData.firstName,
           last_name: customerData.lastName,
@@ -456,49 +570,12 @@ Deno.serve(async (req: Request) => {
           city: customerData.city || null,
           state: customerData.state || null,
           zip_code: customerData.zipCode || null,
-          updated_at: new Date().toISOString(),
         });
-    } else {
-      // Create new user (without password - they can reset later)
-      const tempPassword = crypto.randomUUID();
-      const { data: newUser, error: createUserError } = await supabaseAdmin.auth.admin.createUser({
-        email: customerData.email,
-        password: tempPassword,
-        email_confirm: true,
-        user_metadata: {
-          first_name: customerData.firstName,
-          last_name: customerData.lastName,
-          created_via: "pos_walk_in",
-        },
-      });
-
-      if (createUserError) {
-        console.error("❌ Failed to create user:", createUserError);
-        // Continue without user - booking can still be created
-      } else {
-        userId = newUser.user.id;
-        console.log(`👤 Created new user: ${userId}`);
-
-        // Create user profile
-        await supabaseAdmin
-          .from("user_profiles")
-          .insert({
-            id: userId,
-            first_name: customerData.firstName,
-            last_name: customerData.lastName,
-            phone: customerData.phone,
-            date_of_birth: customerData.dateOfBirth,
-            drivers_license_number: customerData.driversLicense,
-            street_address: customerData.streetAddress || null,
-            city: customerData.city || null,
-            state: customerData.state || null,
-            zip_code: customerData.zipCode || null,
-          });
       }
     }
 
     // ============================================
-    // 6. CREATE BOOKING
+    // 7. CREATE BOOKING
     // ============================================
     const bookingNumber = generateBookingNumber();
 
@@ -549,7 +626,8 @@ Deno.serve(async (req: Request) => {
       is_walk_in: true,
       created_by_worker_id: workerAccount.id,
       payment_method: paymentData.method,
-      admin_notes: adminNotes || `Walk-in booking created by ${workerAccount.full_name}`,
+      admin_notes:
+        adminNotes || `Walk-in booking created by ${workerAccount.full_name}`,
       actual_pickup_date: new Date().toISOString(),
     };
 
@@ -562,38 +640,47 @@ Deno.serve(async (req: Request) => {
     if (bookingError) {
       console.error("❌ Failed to create booking:", bookingError);
       return new Response(
-        JSON.stringify({ error: "Failed to create booking", details: bookingError.message }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: "Failed to create booking",
+          details: bookingError.message,
+        }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
-    console.log(`✅ Booking created: ${booking.id} (${booking.booking_number})`);
+    console.log(
+      `✅ Booking created: ${booking.id} (${booking.booking_number})`,
+    );
 
     // ============================================
-    // 7. CREATE PRIMARY DRIVER RECORD
+    // 8. CREATE PRIMARY DRIVER RECORD
     // ============================================
-    const { data: primaryDriver, error: primaryDriverError } = await supabaseAdmin
-      .from("primary_drivers")
-      .insert({
-        booking_id: booking.id,
-        user_id: userId,
-        first_name: customerData.firstName,
-        last_name: customerData.lastName,
-        email: customerData.email,
-        phone: customerData.phone,
-        drivers_license: customerData.driversLicense,
-        date_of_birth: customerData.dateOfBirth,
-        street_address: customerData.streetAddress || null,
-        city: customerData.city || null,
-        state: customerData.state || null,
-        zip_code: customerData.zipCode || null,
-        is_account_holder: !!userId,
-        is_verified: true,
-        verified_by: workerAccount.id,
-        verified_at: new Date().toISOString(),
-      })
-      .select("id")
-      .single();
+    const { data: primaryDriver, error: primaryDriverError } =
+      await supabaseAdmin
+        .from("primary_drivers")
+        .insert({
+          booking_id: booking.id,
+          user_id: userId,
+          first_name: customerData.firstName,
+          last_name: customerData.lastName,
+          email: customerData.email,
+          phone: customerData.phone,
+          drivers_license: customerData.driversLicense,
+          date_of_birth: customerData.dateOfBirth,
+          street_address: customerData.streetAddress || null,
+          city: customerData.city || null,
+          state: customerData.state || null,
+          zip_code: customerData.zipCode || null,
+          is_account_holder: !!userId,
+          is_verified: true,
+          verified_by: workerAccount.id,
+          verified_at: new Date().toISOString(),
+        })
+        .select("id")
+        .single();
 
     if (primaryDriverError) {
       console.error("❌ Failed to create primary driver:", primaryDriverError);
@@ -603,7 +690,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // ============================================
-    // 8. CREATE DRIVER VERIFICATION RECORD
+    // 9. CREATE DRIVER VERIFICATION RECORD
     // ============================================
     if (primaryDriver) {
       const { error: verificationRecordError } = await supabaseAdmin
@@ -625,7 +712,8 @@ Deno.serve(async (req: Request) => {
           verified_address_line1: primaryVerification.verified_address_line1,
           verified_address_city: primaryVerification.verified_address_city,
           verified_address_state: primaryVerification.verified_address_state,
-          verified_address_postal_code: primaryVerification.verified_address_postal_code,
+          verified_address_postal_code:
+            primaryVerification.verified_address_postal_code,
           license_expiration_date: primaryVerification.license_expiration_date,
           name_match: primaryVerification.name_match,
           dob_match: primaryVerification.dob_match,
@@ -640,7 +728,10 @@ Deno.serve(async (req: Request) => {
         });
 
       if (verificationRecordError) {
-        console.error("⚠️ Failed to create verification record:", verificationRecordError);
+        console.error(
+          "⚠️ Failed to create verification record:",
+          verificationRecordError,
+        );
       }
 
       // Update pending verification with booking link
@@ -656,7 +747,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // ============================================
-    // 9. CREATE ADDITIONAL DRIVERS
+    // 10. CREATE ADDITIONAL DRIVERS
     // ============================================
     if (additionalDrivers && additionalDrivers.length > 0) {
       for (const additionalDriver of additionalDrivers) {
@@ -669,7 +760,9 @@ Deno.serve(async (req: Request) => {
           .single();
 
         if (!additionalVerification) {
-          console.warn(`⚠️ Additional driver verification not found: ${additionalDriver.pendingVerificationId}`);
+          console.warn(
+            `⚠️ Additional driver verification not found: ${additionalDriver.pendingVerificationId}`,
+          );
           continue;
         }
 
@@ -697,45 +790,51 @@ Deno.serve(async (req: Request) => {
           .single();
 
         if (addDriverError) {
-          console.error("⚠️ Failed to create additional driver:", addDriverError);
+          console.error(
+            "⚠️ Failed to create additional driver:",
+            addDriverError,
+          );
           continue;
         }
 
         console.log(`✅ Additional driver created: ${addDriver.id}`);
 
         // Create verification record for additional driver
-        await supabaseAdmin
-          .from("driver_verifications")
-          .insert({
-            driver_type: "additional",
-            additional_driver_id: addDriver.id,
-            booking_id: booking.id,
-            stripe_session_id: additionalVerification.stripe_verification_session_id,
-            status: additionalVerification.verification_status,
-            provided_first_name: additionalVerification.provided_first_name,
-            provided_last_name: additionalVerification.provided_last_name,
-            provided_dob: additionalVerification.provided_dob,
-            provided_license_number: additionalVerification.provided_license_number,
-            verified_first_name: additionalVerification.verified_first_name,
-            verified_last_name: additionalVerification.verified_last_name,
-            verified_dob: additionalVerification.verified_dob,
-            verified_license_number: additionalVerification.verified_license_number,
-            verified_address_line1: additionalVerification.verified_address_line1,
-            verified_address_city: additionalVerification.verified_address_city,
-            verified_address_state: additionalVerification.verified_address_state,
-            verified_address_postal_code: additionalVerification.verified_address_postal_code,
-            license_expiration_date: additionalVerification.license_expiration_date,
-            name_match: additionalVerification.name_match,
-            dob_match: additionalVerification.dob_match,
-            license_number_match: additionalVerification.license_number_match,
-            match_warnings: additionalVerification.match_warnings,
-            is_overridden: additionalVerification.is_overridden,
-            override_reason: additionalVerification.override_reason,
-            overridden_by: additionalVerification.overridden_by,
-            overridden_at: additionalVerification.overridden_at,
-            verified_at: additionalVerification.verified_at,
-            created_by: workerAccount.id,
-          });
+        await supabaseAdmin.from("driver_verifications").insert({
+          driver_type: "additional",
+          additional_driver_id: addDriver.id,
+          booking_id: booking.id,
+          stripe_session_id:
+            additionalVerification.stripe_verification_session_id,
+          status: additionalVerification.verification_status,
+          provided_first_name: additionalVerification.provided_first_name,
+          provided_last_name: additionalVerification.provided_last_name,
+          provided_dob: additionalVerification.provided_dob,
+          provided_license_number:
+            additionalVerification.provided_license_number,
+          verified_first_name: additionalVerification.verified_first_name,
+          verified_last_name: additionalVerification.verified_last_name,
+          verified_dob: additionalVerification.verified_dob,
+          verified_license_number:
+            additionalVerification.verified_license_number,
+          verified_address_line1: additionalVerification.verified_address_line1,
+          verified_address_city: additionalVerification.verified_address_city,
+          verified_address_state: additionalVerification.verified_address_state,
+          verified_address_postal_code:
+            additionalVerification.verified_address_postal_code,
+          license_expiration_date:
+            additionalVerification.license_expiration_date,
+          name_match: additionalVerification.name_match,
+          dob_match: additionalVerification.dob_match,
+          license_number_match: additionalVerification.license_number_match,
+          match_warnings: additionalVerification.match_warnings,
+          is_overridden: additionalVerification.is_overridden,
+          override_reason: additionalVerification.override_reason,
+          overridden_by: additionalVerification.overridden_by,
+          overridden_at: additionalVerification.overridden_at,
+          verified_at: additionalVerification.verified_at,
+          created_by: workerAccount.id,
+        });
 
         // Update pending verification
         await supabaseAdmin
@@ -751,9 +850,12 @@ Deno.serve(async (req: Request) => {
     }
 
     // ============================================
-    // 10. UPDATE PAYMENT RECORDS
+    // 11. UPDATE PAYMENT RECORDS
     // ============================================
-    if (paymentData.method === "terminal" && paymentData.terminalTransactionId) {
+    if (
+      paymentData.method === "terminal" &&
+      paymentData.terminalTransactionId
+    ) {
       await supabaseAdmin
         .from("pos_transactions")
         .update({
@@ -766,24 +868,22 @@ Deno.serve(async (req: Request) => {
 
     // For split payments, record the cash portion
     if (paymentData.method === "split" && paymentData.cashAmountCents) {
-      await supabaseAdmin
-        .from("pos_transactions")
-        .insert({
-          booking_id: booking.id,
-          worker_id: workerAccount.id,
-          amount_cents: paymentData.cashAmountCents,
-          currency: "usd",
-          payment_type: "cash",
-          status: "succeeded",
-          cash_tendered_cents: paymentData.cashTenderedCents,
-          cash_change_cents: paymentData.cashChangeCents,
-          notes: "Split payment - cash portion",
-          completed_at: new Date().toISOString(),
-        });
+      await supabaseAdmin.from("pos_transactions").insert({
+        booking_id: booking.id,
+        worker_id: workerAccount.id,
+        amount_cents: paymentData.cashAmountCents,
+        currency: "usd",
+        payment_type: "cash",
+        status: "succeeded",
+        cash_tendered_cents: paymentData.cashTenderedCents,
+        cash_change_cents: paymentData.cashChangeCents,
+        notes: "Split payment - cash portion",
+        completed_at: new Date().toISOString(),
+      });
     }
 
     // ============================================
-    // 11. UPDATE VEHICLE STATUS
+    // 12. UPDATE VEHICLE STATUS
     // ============================================
     await supabaseAdmin
       .from("vehicles")
@@ -796,7 +896,7 @@ Deno.serve(async (req: Request) => {
     console.log(`✅ Vehicle status updated to rented`);
 
     // ============================================
-    // 12. SEND CONFIRMATION EMAIL
+    // 13. SEND CONFIRMATION EMAIL
     // ============================================
     try {
       await sendPOSBookingConfirmationEmail(
@@ -806,7 +906,7 @@ Deno.serve(async (req: Request) => {
         vehicle.name,
         pickupDate,
         returnDate,
-        pricingData.totalPrice
+        pricingData.totalPrice,
       );
     } catch (emailError) {
       console.error("⚠️ Email sending failed:", emailError);
@@ -814,7 +914,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // ============================================
-    // 13. RETURN SUCCESS RESPONSE
+    // 14. RETURN SUCCESS RESPONSE
     // ============================================
     return new Response(
       JSON.stringify({
@@ -830,14 +930,23 @@ Deno.serve(async (req: Request) => {
         status: "active",
         message: "Booking completed successfully",
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          ...rateLimitHeaders(rateLimitResult),
+        },
+      },
     );
-
   } catch (error) {
     console.error("❌ Complete POS booking error:", error);
     return new Response(
       JSON.stringify({ error: "Failed to complete booking" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
     );
   }
 });

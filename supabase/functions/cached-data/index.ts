@@ -3,6 +3,7 @@
 // Serves cached public data: vehicles, config, delivery locations, reviews
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { toBusinessDateString } from "../_shared/dates.ts";
 import {
   cacheGetOrSet,
   cacheDel,
@@ -18,7 +19,12 @@ import {
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+// Internal API key for service-to-service calls (optional)
+const INTERNAL_API_KEY = Deno.env.get("INTERNAL_API_KEY") || "";
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+// Use shared date helpers in ../_shared/dates.ts
 
 // ============================================
 // CORS CONFIGURATION
@@ -56,6 +62,78 @@ function jsonResponse(
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+/**
+ * Authenticate a request for worker endpoints.
+ * Accepts either a shared internal API key header (X-INTERNAL-API-KEY)
+ * or a Bearer token that maps to an active worker account.
+ * Returns null on success, or a Response (401/403) to return directly.
+ */
+async function authenticateWorkerRequest(
+  req: Request,
+): Promise<Response | null> {
+  const corsHeaders = getCorsHeaders(req);
+
+  // 1) Internal API key (fast path)
+  const internalKey = req.headers.get("X-INTERNAL-API-KEY") || "";
+  if (INTERNAL_API_KEY && internalKey && internalKey === INTERNAL_API_KEY) {
+    return null; // authorized
+  }
+
+  // 2) Bearer token - use Supabase admin client to validate and check worker role
+  const authHeader = req.headers.get("Authorization") || "";
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return new Response(JSON.stringify({ error: "Authentication required" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  const token = authHeader.replace("Bearer ", "");
+
+  try {
+    // Use the service role client to lookup the user from the token
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser(token as any);
+    if (userError || !user) {
+      return new Response(
+        JSON.stringify({ error: "Invalid or expired session" }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    // Verify user has a worker account and is active
+    const { data: workerAccount, error: workerError } = await supabase
+      .from("worker_accounts")
+      .select("id, full_name, role, is_active")
+      .eq("auth_user_id", user.id)
+      .single();
+
+    if (workerError || !workerAccount || !workerAccount.is_active) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized - Worker account required" }),
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
+      );
+    }
+
+    // authorized
+    return null;
+  } catch (err) {
+    console.error("[AUTH] Error verifying worker", err);
+    return new Response(JSON.stringify({ error: "Authentication failed" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
 }
 
 function errorResponse(
@@ -198,6 +276,33 @@ function parseRoute(url: URL): RouteMatch {
     }
     // /delivery-locations/:id
     return { handler: "delivery:single", params: { id: segments[1] }, query };
+  }
+
+  // WORKERS PORTAL ROUTES
+  if (segments[0] === "workers") {
+    if (segments[1] === "dashboard-stats") {
+      return { handler: "workers:dashboardStats", params: {}, query };
+    }
+    if (segments[1] === "vehicles") {
+      return { handler: "workers:vehicles", params: {}, query };
+    }
+    if (segments[1] === "overdue") {
+      return { handler: "workers:overdue", params: {}, query };
+    }
+    if (segments[1] === "customers") {
+      return { handler: "workers:customers", params: {}, query };
+    }
+    if (segments[1] === "calendar") {
+      return { handler: "workers:calendar", params: {}, query };
+    }
+    if (segments[1] === "delivery-locations") {
+      return { handler: "workers:deliveryLocations", params: {}, query };
+    }
+  }
+
+  // CACHE INVALIDATION ROUTE (called by database triggers)
+  if (segments[0] === "invalidate") {
+    return { handler: "invalidate", params: {}, query };
   }
 
   return { handler: "notFound", params: {}, query };
@@ -569,9 +674,12 @@ async function handleConfigSingle(key: string): Promise<unknown> {
   );
 }
 
-async function handleConfigByPrefix(prefix: string): Promise<unknown> {
-  const cacheKey = generateCacheKey(`${CACHE_PREFIX.CONFIG}:prefix`, {
-    prefix,
+/**
+ * Get configs by category (FIXED: uses category field, not key prefix)
+ */
+async function handleConfigByCategory(category: string): Promise<unknown> {
+  const cacheKey = generateCacheKey(`${CACHE_PREFIX.CONFIG}:category`, {
+    category,
   });
 
   return cacheGetOrSet(
@@ -579,8 +687,8 @@ async function handleConfigByPrefix(prefix: string): Promise<unknown> {
     async () => {
       const { data, error } = await supabase
         .from("system_config")
-        .select("*")
-        .ilike("key", `${prefix}%`);
+        .select("key, value")
+        .eq("category", category);
 
       if (error) throw error;
 
@@ -709,7 +817,7 @@ async function handleDeliveryFee(id: string): Promise<unknown> {
     async () => {
       const { data, error } = await supabase
         .from("delivery_locations")
-        .select("fee")
+        .select("delivery_fee")
         .eq("id", id)
         .eq("is_active", true)
         .single();
@@ -718,39 +826,365 @@ async function handleDeliveryFee(id: string): Promise<unknown> {
         if (error.code === "PGRST116") return { fee: 0 };
         throw error;
       }
-      return { fee: Number(data?.fee) || 0 };
+      return { fee: Number(data?.delivery_fee) || 0 };
     },
     { ttl: CACHE_TTL.DELIVERY_LOCATIONS },
   );
 }
 
 // ============================================
-// CACHE INVALIDATION ENDPOINT (Internal Use)
+// CACHE INVALIDATION ENDPOINT
 // ============================================
+
+/**
+ * Handle cache invalidation requests
+ * Called by database triggers via pg_net or manually
+ */
 async function handleInvalidate(
   target: string,
   corsHeaders: Record<string, string>,
 ): Promise<Response> {
   try {
+    console.log(`[INVALIDATE] Invalidating cache for: ${target}`);
+
     switch (target) {
       case "vehicles":
+        // Clear all vehicle-related caches
         await cacheDelPattern(`${CACHE_PREFIX.VEHICLES}:*`);
+        // Also clear dashboard stats (has vehicle counts)
+        await cacheDel(`${CACHE_PREFIX.STATS}:dashboard`);
         break;
+
+      case "bookings":
+        // Clear dashboard stats (has booking counts)
+        await cacheDel(`${CACHE_PREFIX.STATS}:dashboard`);
+        break;
+
       case "config":
+        // Clear all config caches
         await cacheDelPattern(`${CACHE_PREFIX.CONFIG}:*`);
         break;
+
+      case "delivery-locations":
+        // Clear delivery location caches
+        await cacheDelPattern(`${CACHE_PREFIX.CONFIG}:delivery-locations:*`);
+        break;
+
+      case "customers":
+        // Clear customer list cache and dashboard stats
+        await cacheDelPattern(`${CACHE_PREFIX.CUSTOMERS}:*`);
+        await cacheDel(`${CACHE_PREFIX.STATS}:dashboard`);
+        break;
+
       case "all":
+        // Nuclear option - clear everything
         await cacheDelPattern("*");
         break;
+
       default:
+        // Try to delete as a specific key
         await cacheDel(target);
     }
 
-    return jsonResponse({ success: true, invalidated: target }, corsHeaders);
+    console.log(`[INVALIDATE] Successfully invalidated: ${target}`);
+
+    return jsonResponse(
+      {
+        success: true,
+        invalidated: target,
+        timestamp: new Date().toISOString(),
+      },
+      corsHeaders,
+    );
   } catch (error) {
     console.error("[INVALIDATE] Error:", error);
     return errorResponse("Failed to invalidate cache", corsHeaders);
   }
+}
+
+// ============================================
+// WORKERS PORTAL HANDLERS
+// ============================================
+
+/**
+ * Get all dashboard stats in a single call
+ * Combines vehicle counts, booking counts, customer count
+ */
+async function handleWorkerDashboardStats(): Promise<unknown> {
+  const cacheKey = `${CACHE_PREFIX.STATS}:dashboard`;
+
+  return cacheGetOrSet(
+    cacheKey,
+    async () => {
+      // Vehicle counts by status
+      const { data: vehicles, error: vehicleError } = await supabase
+        .from("vehicles")
+        .select("status");
+
+      if (vehicleError) throw vehicleError;
+
+      const vehicleCounts: Record<string, number> = {
+        available: 0,
+        rented: 0,
+        reserved: 0,
+        maintenance: 0,
+        inspection: 0,
+        "in-stock": 0,
+        sold: 0,
+        total: 0,
+      };
+
+      (vehicles || []).forEach((v) => {
+        const status = v.status as string;
+        if (status in vehicleCounts) {
+          vehicleCounts[status]++;
+        }
+        vehicleCounts.total++;
+      });
+
+      // Booking counts
+      const { count: totalBookings } = await supabase
+        .from("bookings")
+        .select("*", { count: "exact", head: true });
+
+      const { count: pendingBookings } = await supabase
+        .from("bookings")
+        .select("*", { count: "exact", head: true })
+        .eq("status", "pending");
+
+      const { count: activeBookings } = await supabase
+        .from("bookings")
+        .select("*", { count: "exact", head: true })
+        .in("status", ["confirmed", "active"]);
+
+      // Pending insurance count
+      const { count: pendingInsurance } = await supabase
+        .from("bookings")
+        .select("*", { count: "exact", head: true })
+        .eq("insurance_verified", false)
+        .in("status", ["pending", "confirmed"]);
+
+      // Pending student verification count (FIXED: is_student_booking)
+      const { count: pendingStudentVerification } = await supabase
+        .from("bookings")
+        .select("*", { count: "exact", head: true })
+        .eq("is_student_booking", true)
+        .eq("student_verified", false)
+        .in("status", ["pending", "confirmed"]);
+
+      // Customer count
+      const { count: customerCount } = await supabase
+        .from("user_profiles")
+        .select("*", { count: "exact", head: true });
+
+      // Today's deliveries (FIXED: use date range for timestamp field)
+      const today = toBusinessDateString();
+      const todayStart = `${today}T00:00:00`;
+      const todayEnd = `${today}T23:59:59`;
+
+      const { count: todaysDeliveries } = await supabase
+        .from("bookings")
+        .select("*", { count: "exact", head: true })
+        .gte("pickup_date", todayStart)
+        .lte("pickup_date", todayEnd)
+        .in("status", ["confirmed", "pending"]);
+
+      // Overdue count (using the view)
+      const { count: overdueCount } = await supabase
+        .from("view_overdue_vehicles")
+        .select("*", { count: "exact", head: true });
+
+      return {
+        vehicles: vehicleCounts,
+        bookings: {
+          total: totalBookings || 0,
+          pending: pendingBookings || 0,
+          active: activeBookings || 0,
+          pendingInsurance: pendingInsurance || 0,
+          pendingStudentVerification: pendingStudentVerification || 0,
+          todaysDeliveries: todaysDeliveries || 0,
+          overdue: overdueCount || 0,
+        },
+        customers: {
+          total: customerCount || 0,
+        },
+        timestamp: new Date().toISOString(),
+      };
+    },
+    { ttl: CACHE_TTL.DASHBOARD_STATS },
+  );
+}
+
+/**
+ * Get all vehicles for workers (all statuses)
+ */
+async function handleWorkerVehicles(status?: string): Promise<unknown> {
+  const cacheKey = generateCacheKey(`${CACHE_PREFIX.VEHICLES}:workers`, {
+    status: status || "all",
+  });
+
+  return cacheGetOrSet(
+    cacheKey,
+    async () => {
+      let query = supabase
+        .from("vehicles")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (status && status !== "all") {
+        query = query.eq("status", status);
+      }
+
+      const { data, error } = await query;
+
+      if (error) throw error;
+      return data || [];
+    },
+    { ttl: CACHE_TTL.VEHICLE_COUNTS },
+  );
+}
+
+/**
+ * Get overdue vehicles with details
+ * FIXED: Uses view_overdue_vehicles which already has all the data we need
+ */
+async function handleWorkerOverdueVehicles(): Promise<unknown> {
+  const cacheKey = `${CACHE_PREFIX.VEHICLES}:overdue`;
+
+  return cacheGetOrSet(
+    cacheKey,
+    async () => {
+      // Use the existing view which already joins vehicles and bookings
+      const { data, error } = await supabase
+        .from("view_overdue_vehicles")
+        .select("*");
+
+      if (error) throw error;
+      return data || [];
+    },
+    { ttl: CACHE_TTL.VEHICLE_COUNTS },
+  );
+}
+
+/**
+ * Get customers with stats for workers
+ * FIXED: Removed email search since user_profiles doesn't have email column
+ */
+async function handleWorkerCustomers(
+  limit: number = 50,
+  offset: number = 0,
+  search?: string,
+): Promise<unknown> {
+  const cacheKey = generateCacheKey(`${CACHE_PREFIX.CUSTOMERS}:list`, {
+    limit,
+    offset,
+    search: search || "",
+  });
+
+  return cacheGetOrSet(
+    cacheKey,
+    async () => {
+      let query = supabase
+        .from("user_profiles")
+        .select("*", { count: "exact" })
+        .order("created_at", { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      if (search) {
+        // Escape backslash, percent and underscore to prevent ILIKE wildcard injection
+        const escapedSearch = search
+          .replace(/\\/g, "\\\\")
+          .replace(/[%_]/g, "\\$&");
+        const pattern = `%${escapedSearch}%`;
+        // FIXED: Removed email since user_profiles doesn't have it
+        query = query.or(
+          `first_name.ilike.${pattern},last_name.ilike.${pattern},phone.ilike.${pattern}`,
+        );
+      }
+
+      const { data, error, count } = await query;
+
+      if (error) throw error;
+
+      return {
+        customers: data || [],
+        total: count || 0,
+        limit,
+        offset,
+      };
+    },
+    { ttl: CACHE_TTL.CUSTOMER_LIST },
+  );
+}
+
+/**
+ * Get calendar entries
+ */
+async function handleWorkerCalendar(
+  startDate?: string,
+  endDate?: string,
+): Promise<unknown> {
+  const cacheKey = generateCacheKey(`${CACHE_PREFIX.CONFIG}:calendar`, {
+    start: startDate || "",
+    end: endDate || "",
+  });
+
+  return cacheGetOrSet(
+    cacheKey,
+    async () => {
+      let query = supabase
+        .from("business_calendar")
+        .select("*")
+        .order("date", { ascending: true });
+
+      if (startDate) {
+        query = query.gte("date", startDate);
+      }
+      if (endDate) {
+        query = query.lte("date", endDate);
+      }
+
+      const { data, error } = await query;
+
+      if (error) throw error;
+      return data || [];
+    },
+    { ttl: CACHE_TTL.BUSINESS_CALENDAR },
+  );
+}
+
+/**
+ * Get delivery locations for workers (including inactive)
+ */
+async function handleWorkerDeliveryLocations(
+  includeInactive: boolean = false,
+): Promise<unknown> {
+  const cacheKey = generateCacheKey(
+    `${CACHE_PREFIX.CONFIG}:delivery-locations:workers`,
+    {
+      includeInactive,
+    },
+  );
+
+  return cacheGetOrSet(
+    cacheKey,
+    async () => {
+      let query = supabase
+        .from("delivery_locations")
+        .select("*")
+        .order("city", { ascending: true });
+
+      if (!includeInactive) {
+        query = query.eq("is_active", true);
+      }
+
+      const { data, error } = await query;
+
+      if (error) throw error;
+      return data || [];
+    },
+    { ttl: CACHE_TTL.DELIVERY_LOCATIONS },
+  );
 }
 
 // ============================================
@@ -809,11 +1243,17 @@ Deno.serve(async (req: Request) => {
               "GET /delivery-locations/city/:city",
               "GET /delivery-locations/:id",
               "GET /delivery-locations/:id/fee",
+              "--- Workers Portal ---",
+              "GET /workers/dashboard-stats",
+              "GET /workers/vehicles?status=available",
+              "GET /workers/overdue",
+              "GET /workers/customers?limit=50&offset=0&search=",
+              "GET /workers/calendar?start=2024-01-01&end=2024-12-31",
+              "GET /workers/delivery-locations?includeInactive=true",
             ],
           },
           corsHeaders,
         );
-
       // Vehicles
       case "vehicles:list":
         data = await handleVehiclesList();
@@ -876,22 +1316,22 @@ Deno.serve(async (req: Request) => {
         data = await handleConfigSingle(route.params.key);
         break;
       case "config:fees":
-        data = await handleConfigByPrefix("fee_");
+        data = await handleConfigByCategory("fees");
         break;
       case "config:timing":
-        data = await handleConfigByPrefix("timing_");
+        data = await handleConfigByCategory("timing");
         break;
       case "config:storeHours":
-        data = await handleConfigByPrefix("store_");
+        data = await handleConfigByCategory("store_hours");
         break;
       case "config:delivery":
-        data = await handleConfigByPrefix("delivery_");
+        data = await handleConfigByCategory("delivery");
         break;
       case "config:extensions":
-        data = await handleConfigByPrefix("extension_");
+        data = await handleConfigByCategory("extensions");
         break;
       case "config:drivers":
-        data = await handleConfigByPrefix("driver_");
+        data = await handleConfigByCategory("drivers");
         break;
 
       // Delivery Locations
@@ -914,13 +1354,65 @@ Deno.serve(async (req: Request) => {
         data = await handleDeliveryFee(route.params.id);
         break;
 
-      // Invalidation (POST only)
+      // Invalidation (POST only, requires internal API key)
       case "invalidate": {
         if (req.method !== "POST") {
           return errorResponse("Method not allowed", corsHeaders, 405);
         }
+
+        // Only allow internal API key for invalidation (not user JWT)
+        const internalKey = req.headers.get("X-INTERNAL-API-KEY") || "";
+        if (!INTERNAL_API_KEY || internalKey !== INTERNAL_API_KEY) {
+          console.warn("[INVALIDATE] Unauthorized attempt");
+          return errorResponse("Unauthorized", corsHeaders, 401);
+        }
+
         const body = await req.json();
         return handleInvalidate(body.target || "all", corsHeaders);
+      }
+
+      // Workers Portal Routes
+      case "workers:dashboardStats": {
+        const authRes = await authenticateWorkerRequest(req);
+        if (authRes) return authRes;
+        data = await handleWorkerDashboardStats();
+        break;
+      }
+      case "workers:vehicles": {
+        const authRes = await authenticateWorkerRequest(req);
+        if (authRes) return authRes;
+        data = await handleWorkerVehicles(route.query.status);
+        break;
+      }
+      case "workers:overdue": {
+        const authRes = await authenticateWorkerRequest(req);
+        if (authRes) return authRes;
+        data = await handleWorkerOverdueVehicles();
+        break;
+      }
+      case "workers:customers": {
+        const authRes = await authenticateWorkerRequest(req);
+        if (authRes) return authRes;
+        data = await handleWorkerCustomers(
+          Number(route.query.limit) || 50,
+          Number(route.query.offset) || 0,
+          route.query.search,
+        );
+        break;
+      }
+      case "workers:calendar": {
+        const authRes = await authenticateWorkerRequest(req);
+        if (authRes) return authRes;
+        data = await handleWorkerCalendar(route.query.start, route.query.end);
+        break;
+      }
+      case "workers:deliveryLocations": {
+        const authRes = await authenticateWorkerRequest(req);
+        if (authRes) return authRes;
+        data = await handleWorkerDeliveryLocations(
+          route.query.includeInactive === "true",
+        );
+        break;
       }
 
       // Not Found

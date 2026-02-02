@@ -1,4 +1,5 @@
 import React, { useMemo, useCallback, useId } from "react";
+import { toBusinessDateString } from "@/utils/dates";
 import { User, Mail, Phone, Calendar, CreditCard, MapPin } from "lucide-react";
 import { Input } from "@/components/ui";
 
@@ -44,7 +45,7 @@ export const PrimaryDriverForm: React.FC<PrimaryDriverFormProps> = ({
 
   // Memoize max date (today) for date of birth
   const maxDateOfBirth = useMemo(() => {
-    return new Date().toISOString().split("T")[0];
+    return toBusinessDateString();
   }, []);
 
   // ============================================
@@ -54,75 +55,78 @@ export const PrimaryDriverForm: React.FC<PrimaryDriverFormProps> = ({
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange("firstName", e.target.value);
     },
-    [onChange]
+    [onChange],
   );
 
   const handleLastNameChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange("lastName", e.target.value);
     },
-    [onChange]
+    [onChange],
   );
 
   const handleEmailChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange("email", e.target.value);
     },
-    [onChange]
+    [onChange],
   );
 
   const handlePhoneChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange("phone", e.target.value);
     },
-    [onChange]
+    [onChange],
   );
 
   const handleDateOfBirthChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange("dateOfBirth", e.target.value);
     },
-    [onChange]
+    [onChange],
   );
 
   const handleLicenseNumberChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange("driversLicenseNumber", e.target.value.toUpperCase());
     },
-    [onChange]
+    [onChange],
   );
 
   const handleStreetAddressChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange("streetAddress", e.target.value);
     },
-    [onChange]
+    [onChange],
   );
 
   const handleCityChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange("city", e.target.value);
     },
-    [onChange]
+    [onChange],
   );
 
   const handleStateChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange("state", e.target.value.toUpperCase());
     },
-    [onChange]
+    [onChange],
   );
 
   const handleZipCodeChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       onChange("zipCode", e.target.value);
     },
-    [onChange]
+    [onChange],
   );
 
   return (
     <fieldset disabled={disabled} className="space-y-6">
-      <legend id={headingId} className="text-lg font-semibold text-gray-900 mb-4">
+      <legend
+        id={headingId}
+        className="text-lg font-semibold text-gray-900 mb-4"
+      >
         Primary Driver Information
       </legend>
 

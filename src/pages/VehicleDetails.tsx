@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { toBusinessDateString } from "@/utils/dates";
 import { useParams, useNavigate } from "react-router-dom";
 import { Helmet } from "react-helmet-async";
 import * as Sentry from "@sentry/react";
@@ -82,14 +83,14 @@ function formatDate(date: Date): string {
 function getMinDate(): string {
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
-  return tomorrow.toISOString().split("T")[0];
+  return toBusinessDateString(tomorrow);
 }
 
 function getDefaultReturnDate(pickupDate: string): string {
   if (!pickupDate) return "";
   const pickup = new Date(pickupDate);
   pickup.setDate(pickup.getDate() + 7); // Default 7 days
-  return pickup.toISOString().split("T")[0];
+  return toBusinessDateString(pickup);
 }
 
 // ============================================

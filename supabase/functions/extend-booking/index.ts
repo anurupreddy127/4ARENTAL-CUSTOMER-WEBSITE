@@ -1,6 +1,11 @@
 // supabase/functions/extend-booking/index.ts
 import { createClient } from "npm:@supabase/supabase-js@2";
 import Stripe from "npm:stripe@13.10.0";
+import {
+  checkRateLimit,
+  rateLimitResponse,
+  rateLimitHeaders,
+} from "../_shared/ratelimit.ts";
 
 // ============================================
 // ENVIRONMENT VARIABLES
@@ -8,7 +13,8 @@ import Stripe from "npm:stripe@13.10.0";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY")!;
-const CUSTOMER_PORTAL_URL = Deno.env.get("CUSTOMER_PORTAL_URL") || "https://4arentals.com";
+const CUSTOMER_PORTAL_URL =
+  Deno.env.get("CUSTOMER_PORTAL_URL") || "https://4arentals.com";
 
 // ============================================
 // ALLOWED ORIGINS (Production)
@@ -25,11 +31,14 @@ const ALLOWED_ORIGINS = [
 // ============================================
 function getCorsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("Origin") || "";
-  const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  const allowedOrigin = ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : ALLOWED_ORIGINS[0];
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 }
@@ -42,40 +51,12 @@ interface ExtendBookingPayload {
   newReturnDate: string;
 }
 
-interface RateLimitEntry {
-  count: number;
-  windowStart: number;
-}
-
-// ============================================
-// RATE LIMITING
-// ============================================
-const rateLimitMap = new Map<string, RateLimitEntry>();
-const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const MAX_REQUESTS_PER_HOUR = 10;
-
-function checkRateLimit(userId: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(userId);
-
-  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
-    rateLimitMap.set(userId, { count: 1, windowStart: now });
-    return true;
-  }
-
-  if (entry.count >= MAX_REQUESTS_PER_HOUR) {
-    return false;
-  }
-
-  entry.count++;
-  return true;
-}
-
 // ============================================
 // INPUT VALIDATION
 // ============================================
 function isValidUUID(str: string): boolean {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   return uuidRegex.test(str);
 }
 
@@ -97,10 +78,10 @@ Deno.serve(async (req: Request) => {
 
   // Only allow POST
   if (req.method !== "POST") {
-    return new Response(
-      JSON.stringify({ error: "Method not allowed" }),
-      { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   try {
@@ -117,27 +98,38 @@ Deno.serve(async (req: Request) => {
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return new Response(
         JSON.stringify({ error: "Authentication required" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(token);
 
     if (authError || !user) {
       return new Response(
         JSON.stringify({ error: "Invalid or expired session" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // ============================================
     // 2. RATE LIMITING
     // ============================================
-    if (!checkRateLimit(user.id)) {
-      return new Response(
-        JSON.stringify({ error: "Too many requests. Please try again later." }),
-        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    const rateLimitResult = await checkRateLimit("BOOKING_EXTEND", user.id);
+    if (!rateLimitResult.success) {
+      return rateLimitResponse(
+        rateLimitResult,
+        corsHeaders,
+        "Too many extension requests. Please try again later.",
       );
     }
 
@@ -148,28 +140,28 @@ Deno.serve(async (req: Request) => {
     try {
       payload = await req.json();
     } catch {
-      return new Response(
-        JSON.stringify({ error: "Invalid request body" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid request body" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const { bookingId, newReturnDate } = payload;
 
     // Validate bookingId format
     if (!bookingId || !isValidUUID(bookingId)) {
-      return new Response(
-        JSON.stringify({ error: "Invalid booking ID" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid booking ID" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // Validate newReturnDate format
     if (!newReturnDate || !isValidDate(newReturnDate)) {
-      return new Response(
-        JSON.stringify({ error: "Invalid return date" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Invalid return date" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const parsedNewReturnDate = new Date(newReturnDate);
@@ -180,7 +172,10 @@ Deno.serve(async (req: Request) => {
     if (parsedNewReturnDate <= today) {
       return new Response(
         JSON.stringify({ error: "New return date must be in the future" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -189,7 +184,9 @@ Deno.serve(async (req: Request) => {
     // ============================================
     const { data: booking, error: bookingError } = await supabase
       .from("bookings")
-      .select("*, vehicles(id, name, image, daily_rate, weekly_rate, monthly_rate)")
+      .select(
+        "*, vehicles(id, name, image, daily_rate, weekly_rate, monthly_rate)",
+      )
       .eq("id", bookingId)
       .eq("user_id", user.id) // CRITICAL: Only fetch if user owns the booking
       .single();
@@ -197,7 +194,10 @@ Deno.serve(async (req: Request) => {
     if (bookingError || !booking) {
       return new Response(
         JSON.stringify({ error: "Booking not found or access denied" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -207,24 +207,44 @@ Deno.serve(async (req: Request) => {
     // Check booking status
     if (booking.status !== "confirmed" && booking.status !== "active") {
       return new Response(
-        JSON.stringify({ error: "Only confirmed or active bookings can be extended" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: "Only confirmed or active bookings can be extended",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Check rental type
-    if (booking.rental_type === "weekly" || booking.rental_type === "semester") {
+    if (
+      booking.rental_type === "weekly" ||
+      booking.rental_type === "semester"
+    ) {
       return new Response(
-        JSON.stringify({ error: "This rental type cannot be extended online. Please contact support." }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error:
+            "This rental type cannot be extended online. Please contact support.",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Check extension limit
     if (booking.extension_count >= 5) {
       return new Response(
-        JSON.stringify({ error: "Maximum number of extensions reached. Please contact support." }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error:
+            "Maximum number of extensions reached. Please contact support.",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -232,8 +252,13 @@ Deno.serve(async (req: Request) => {
     const currentReturnDate = new Date(booking.return_date);
     if (parsedNewReturnDate <= currentReturnDate) {
       return new Response(
-        JSON.stringify({ error: "New return date must be after the current return date" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: "New return date must be after the current return date",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -260,8 +285,13 @@ Deno.serve(async (req: Request) => {
 
     if (conflicts && conflicts.length > 0) {
       return new Response(
-        JSON.stringify({ error: "Vehicle is not available for the requested dates" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({
+          error: "Vehicle is not available for the requested dates",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -275,14 +305,17 @@ Deno.serve(async (req: Request) => {
         p_vehicle_id: booking.vehicle_id,
         p_current_return_date: booking.return_date.split("T")[0],
         p_new_return_date: newReturnDate.split("T")[0],
-      }
+      },
     );
 
     if (priceError || !priceData || priceData.length === 0) {
       console.error("[extend-booking] Price calculation error:", priceError);
       return new Response(
         JSON.stringify({ error: "Failed to calculate extension price" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -294,13 +327,19 @@ Deno.serve(async (req: Request) => {
     if (extensionAmount <= 0 || additionalDays <= 0) {
       return new Response(
         JSON.stringify({ error: "Invalid extension parameters" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
     // Set minimum charge (prevent $0 payments)
     const MIN_CHARGE_CENTS = 50; // $0.50 minimum
-    const chargeAmountCents = Math.max(Math.round(extensionAmount * 100), MIN_CHARGE_CENTS);
+    const chargeAmountCents = Math.max(
+      Math.round(extensionAmount * 100),
+      MIN_CHARGE_CENTS,
+    );
 
     // ============================================
     // 8. GET CUSTOMER EMAIL
@@ -323,7 +362,10 @@ Deno.serve(async (req: Request) => {
     if (!customerEmail) {
       return new Response(
         JSON.stringify({ error: "Customer email is required for payment" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -342,7 +384,9 @@ Deno.serve(async (req: Request) => {
           product_data: {
             name: `Rental Extension - ${vehicleName}`,
             description: `Extend rental by ${additionalDays} days (New return: ${parsedNewReturnDate.toLocaleDateString()})`,
-            ...(vehicleImage && vehicleImage.startsWith("http") ? { images: [vehicleImage] } : {}),
+            ...(vehicleImage && vehicleImage.startsWith("http")
+              ? { images: [vehicleImage] }
+              : {}),
           },
           unit_amount: chargeAmountCents,
         },
@@ -390,15 +434,26 @@ Deno.serve(async (req: Request) => {
         amount: extensionAmount,
         days: additionalDays,
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          ...rateLimitHeaders(rateLimitResult),
+        },
+      },
     );
-
   } catch (error) {
     console.error("[extend-booking] Unexpected error:", error);
 
     return new Response(
-      JSON.stringify({ error: "An unexpected error occurred. Please try again." }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      JSON.stringify({
+        error: "An unexpected error occurred. Please try again.",
+      }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      },
     );
   }
 });
