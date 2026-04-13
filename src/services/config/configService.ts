@@ -1,172 +1,66 @@
-// services/config/configService.ts (With Redis Caching)
-/**
- * Service for fetching and managing system configuration
- * ✅ Now uses Redis caching via Edge Function (1 hour TTL)
- */
-
-import { cachedApi } from "@/config/api";
 import type { ConfigKey, ParsedConfigMap } from "@/types";
-import * as Sentry from "@sentry/react";
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
-
-/**
- * Safe logging for development
- */
-function logInfo(message: string): void {
-  if (import.meta.env.DEV) {
-    console.log(`[configService] ${message}`);
-  }
-}
-
-/**
- * Safe error logging
- */
-function logError(context: string, error: unknown): void {
-  if (import.meta.env.DEV) {
-    console.error(`[configService] ${context}:`, error);
-  } else {
-    Sentry.captureException(error, {
-      tags: { service: "configService", context },
-    });
-  }
-}
-
-/**
- * Parse raw config values into typed values
- */
-function parseConfigValue(
-  key: string,
-  value: unknown,
-): string | number | boolean {
-  // Already parsed (from cache)
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value;
-
-  const strValue = String(value);
-
-  // Boolean configs
-  const booleanKeys = [
-    "us_license_only",
-    "young_driver_fee_enabled",
-    "first_booking_verification_only",
-    "cash_advance_booking_allowed",
-    "cash_delivery_allowed",
-  ];
-
-  if (booleanKeys.includes(key)) {
-    return strValue === "true";
-  }
-
-  // String configs (keep as string)
-  const stringKeys = [
-    "store_hours_weekday_open",
-    "store_hours_weekday_close",
-    "store_hours_sunday_open",
-    "store_hours_sunday_close",
-    "booking_id_prefix",
-  ];
-
-  if (stringKeys.includes(key)) {
-    return strValue;
-  }
-
-  // Everything else is numeric
-  const parsed = parseFloat(strValue);
-  return isNaN(parsed) ? 0 : parsed;
-}
-
-/**
- * Parse all config values
- */
-function parseAllConfigs(raw: Record<string, unknown>): ParsedConfigMap {
-  const parsed: Partial<ParsedConfigMap> = {};
-
-  for (const [key, value] of Object.entries(raw)) {
-    (parsed as Record<string, unknown>)[key] = parseConfigValue(key, value);
-  }
-
-  return parsed as ParsedConfigMap;
-}
-
-// ============================================
-// IN-MEMORY FALLBACK CACHE
-// ============================================
-// Keeps a local copy in case Edge Function is unavailable
-
-let fallbackCache: ParsedConfigMap | null = null;
-
-// ============================================
-// SERVICE (WITH REDIS CACHING)
-// ============================================
+const DEFAULT_CONFIG: ParsedConfigMap = {
+  cancellation_fee: 50,
+  no_show_fee: 50,
+  additional_driver_fee: 50,
+  insurance_late_fee_daily: 50,
+  monthly_no_notice_fine: 50,
+  early_return_fee: 50,
+  security_deposit_weekly: 350,
+  security_deposit_monthly_multiplier: 1,
+  booking_min_lead_time_hours: 48,
+  booking_max_advance_days: 30,
+  min_rental_days: 7,
+  vehicle_buffer_days: 2,
+  modification_cutoff_hours: 24,
+  deposit_release_business_days: 7,
+  monthly_notice_days: 7,
+  monthly_notice_reply_days: 1,
+  monthly_rental_threshold_days: 30,
+  insurance_deadline_hours: 24,
+  insurance_grace_period_hours: 48,
+  overdue_escalation_days: 7,
+  delivery_wait_minutes: 30,
+  delivery_first_slot_offset_hours: 1,
+  delivery_slot_interval_hours: 3,
+  extension_min_rental_days: 30,
+  extension_min_duration_days: 7,
+  extension_cutoff_days: 5,
+  max_extensions: 5,
+  min_driver_age: 18,
+  max_additional_drivers: 3,
+  us_license_only: true,
+  young_driver_fee_enabled: false,
+  first_booking_verification_only: true,
+  cash_advance_booking_allowed: false,
+  cash_delivery_allowed: false,
+  store_hours_weekday_open: "09:00",
+  store_hours_weekday_close: "19:00",
+  store_hours_sunday_open: "09:00",
+  store_hours_sunday_close: "17:00",
+  booking_id_prefix: "4AR",
+} as ParsedConfigMap;
 
 export const configService = {
-  /**
-   * Get all configs
-   * ✅ CACHED via Redis (1 hour TTL)
-   */
   async getAllConfigs(): Promise<ParsedConfigMap> {
-    logInfo("Fetching configs from cached API...");
-
-    try {
-      const data = await cachedApi.config.all();
-
-      if (!data || Object.keys(data).length === 0) {
-        throw new Error("No configuration data returned");
-      }
-
-      // Parse values and update fallback cache
-      const parsed = parseAllConfigs(data);
-      fallbackCache = parsed;
-
-      logInfo(`Configs loaded (${Object.keys(parsed).length} values)`);
-
-      return parsed;
-    } catch (error) {
-      logError("getAllConfigs", error);
-
-      // Return fallback cache if available
-      if (fallbackCache) {
-        logInfo("Returning fallback cache");
-        return fallbackCache;
-      }
-
-      throw new Error("Failed to load configuration");
-    }
+    return DEFAULT_CONFIG;
   },
 
-  /**
-   * Get a single config value
-   * ✅ Uses cached getAllConfigs()
-   */
   async getConfig<K extends ConfigKey>(key: K): Promise<ParsedConfigMap[K]> {
-    const configs = await this.getAllConfigs();
-    return configs[key];
+    return DEFAULT_CONFIG[key];
   },
 
-  /**
-   * Get multiple config values
-   * ✅ Uses cached getAllConfigs()
-   */
   async getConfigs<K extends ConfigKey>(
     keys: K[],
   ): Promise<Pick<ParsedConfigMap, K>> {
-    const configs = await this.getAllConfigs();
     const result: Partial<Pick<ParsedConfigMap, K>> = {};
-
     for (const key of keys) {
-      result[key] = configs[key];
+      result[key] = DEFAULT_CONFIG[key];
     }
-
     return result as Pick<ParsedConfigMap, K>;
   },
 
-  /**
-   * Get fee-related configs
-   * ✅ CACHED via Redis (1 hour TTL)
-   */
   async getFeeConfigs() {
     return this.getConfigs([
       "cancellation_fee",
@@ -180,10 +74,6 @@ export const configService = {
     ]);
   },
 
-  /**
-   * Get timing-related configs
-   * ✅ CACHED via Redis (1 hour TTL)
-   */
   async getTimingConfigs() {
     return this.getConfigs([
       "booking_min_lead_time_hours",
@@ -195,10 +85,6 @@ export const configService = {
     ]);
   },
 
-  /**
-   * Get extension-related configs
-   * ✅ CACHED via Redis (1 hour TTL)
-   */
   async getExtensionConfigs() {
     return this.getConfigs([
       "extension_min_rental_days",
@@ -208,10 +94,6 @@ export const configService = {
     ]);
   },
 
-  /**
-   * Get driver-related configs
-   * ✅ CACHED via Redis (1 hour TTL)
-   */
   async getDriverConfigs() {
     return this.getConfigs([
       "min_driver_age",
@@ -222,10 +104,6 @@ export const configService = {
     ]);
   },
 
-  /**
-   * Get store hours configs
-   * ✅ CACHED via Redis (1 hour TTL)
-   */
   async getStoreHoursConfigs() {
     return this.getConfigs([
       "store_hours_weekday_open",
@@ -235,10 +113,6 @@ export const configService = {
     ]);
   },
 
-  /**
-   * Get delivery-related configs
-   * ✅ CACHED via Redis (1 hour TTL)
-   */
   async getDeliveryConfigs() {
     return this.getConfigs([
       "delivery_wait_minutes",
@@ -248,10 +122,6 @@ export const configService = {
   },
 };
 
-/**
- * Clear the fallback cache (exported for testing/admin use)
- */
 export function clearConfigCache(): void {
-  fallbackCache = null;
-  logInfo("Fallback cache cleared");
+  // No-op - using static defaults
 }

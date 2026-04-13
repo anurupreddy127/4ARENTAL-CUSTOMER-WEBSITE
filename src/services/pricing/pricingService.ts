@@ -1,11 +1,4 @@
-// services/pricing/pricingService.ts (With Redis Caching for rates)
-/**
- * Service for calculating rental prices using database functions
- * Note: Only getVehicleRates is cached - price calculations must be real-time
- */
-
 import { supabase } from "@/config/supabase";
-import { cachedApi } from "@/config/api";
 import type {
   PricingResult,
   BookingTotal,
@@ -15,10 +8,6 @@ import type {
 } from "@/types";
 import * as Sentry from "@sentry/react";
 import { toBusinessDateString } from "@/utils/dates";
-
-// ============================================
-// TYPES
-// ============================================
 
 interface RawPricingResult {
   rental_days: number;
@@ -69,10 +58,6 @@ interface RawSimplePricing {
   subtotal: number;
 }
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
-
 function logInfo(message: string): void {
   if (import.meta.env.DEV) {
     console.log(`[pricingService] ${message}`);
@@ -89,20 +74,13 @@ function logError(context: string, error: unknown): void {
   }
 }
 
-/**
- * Format date to YYYY-MM-DD for database functions
- */
 function formatDate(date: Date | string): string {
   if (typeof date === "string") {
-    // If already a string, ensure it's in correct format
     return date.split("T")[0];
   }
   return toBusinessDateString(date);
 }
 
-/**
- * Map raw pricing result to typed interface
- */
 function mapPricingResult(raw: RawPricingResult): PricingResult {
   return {
     rentalDays: raw.rental_days,
@@ -123,9 +101,6 @@ function mapPricingResult(raw: RawPricingResult): PricingResult {
   };
 }
 
-/**
- * Map raw booking total to typed interface
- */
 function mapBookingTotal(raw: RawBookingTotal): BookingTotal {
   return {
     rentalDays: raw.rental_days ?? 0,
@@ -143,9 +118,6 @@ function mapBookingTotal(raw: RawBookingTotal): BookingTotal {
   };
 }
 
-/**
- * Map raw extension pricing to typed interface
- */
 function mapExtensionPricing(raw: RawExtensionPricing): ExtensionPricing {
   return {
     extensionDays: raw.extension_days,
@@ -155,16 +127,7 @@ function mapExtensionPricing(raw: RawExtensionPricing): ExtensionPricing {
   };
 }
 
-// ============================================
-// SERVICE
-// ============================================
-
 export const pricingService = {
-  /**
-   * Calculate full pricing breakdown
-   * Calls calculate_rental_price database function
-   * ❌ NOT CACHED - Dynamic calculation based on dates
-   */
   async calculatePrice(
     vehicleId: string,
     pickupDate: Date | string,
@@ -198,11 +161,6 @@ export const pricingService = {
     }
   },
 
-  /**
-   * Get simplified pricing (for quick lookups)
-   * Calls get_rental_price database function
-   * ❌ NOT CACHED - Dynamic calculation based on dates
-   */
   async getPrice(
     vehicleId: string,
     pickupDate: Date | string,
@@ -251,11 +209,6 @@ export const pricingService = {
     }
   },
 
-  /**
-   * Calculate total booking cost including all fees
-   * Calls calculate_booking_total database function
-   * ❌ NOT CACHED - Dynamic calculation based on dates and parameters
-   */
   async calculateBookingTotal(
     vehicleId: string,
     pickupDate: Date | string,
@@ -295,11 +248,6 @@ export const pricingService = {
     }
   },
 
-  /**
-   * Calculate extension pricing
-   * Calls calculate_extension_price database function
-   * ❌ NOT CACHED - Dynamic calculation based on dates
-   */
   async calculateExtensionPrice(
     vehicleId: string,
     currentReturnDate: Date | string,
@@ -333,10 +281,6 @@ export const pricingService = {
     }
   },
 
-  /**
-   * Get vehicle rates
-   * ✅ CACHED (5 min TTL) - Static rate data
-   */
   async getVehicleRates(vehicleId: string): Promise<{
     dailyRate: number;
     weeklyRate: number;
@@ -346,17 +290,26 @@ export const pricingService = {
     logInfo(`Getting rates for vehicle ${vehicleId}`);
 
     try {
-      const rates = await cachedApi.vehicles.rates(vehicleId);
+      const { data, error } = await supabase
+        .from("vehicles")
+        .select("price, daily_rate, weekly_rate, monthly_rate, semester_rate")
+        .eq("id", vehicleId)
+        .maybeSingle();
 
-      if (!rates) {
+      if (error) {
+        logError("getVehicleRates", error);
+        throw new Error("Failed to get vehicle rates");
+      }
+
+      if (!data) {
         throw new Error("Vehicle not found");
       }
 
       return {
-        dailyRate: rates.dailyRate || 0,
-        weeklyRate: rates.weeklyRate || 0,
-        monthlyRate: rates.monthlyRate || 0,
-        semesterRate: rates.semesterRate || 0,
+        dailyRate: Number(data.daily_rate ?? data.price) || 0,
+        weeklyRate: Number(data.weekly_rate) || 0,
+        monthlyRate: Number(data.monthly_rate) || 0,
+        semesterRate: Number(data.semester_rate) || 0,
       };
     } catch (error) {
       logError("getVehicleRates", error);
